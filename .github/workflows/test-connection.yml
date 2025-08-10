@@ -1,0 +1,73 @@
+name: Test Database Connection
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master, main]
+    paths:
+      - 'src/services/clickhouse_service.py'
+      - '.github/workflows/test-connection.yml'
+
+jobs:
+  test-connection:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install clickhouse-driver redis msgpack python-dotenv
+    
+    - name: Test ClickHouse Connection
+      env:
+        CLICKHOUSE_HOST: ${{ secrets.CLICKHOUSE_HOST }}
+        CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
+        CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
+        CLICKHOUSE_DATABASE: quantx
+        CLICKHOUSE_PORT: 9440
+        CLICKHOUSE_SECURE: true
+      run: |
+        python -c "
+        import os
+        from clickhouse_driver import Client
+        
+        client = Client(
+            host=os.environ['CLICKHOUSE_HOST'],
+            port=int(os.environ['CLICKHOUSE_PORT']),
+            user=os.environ['CLICKHOUSE_USER'],
+            password=os.environ['CLICKHOUSE_PASSWORD'],
+            database=os.environ['CLICKHOUSE_DATABASE'],
+            secure=True,
+            verify=True
+        )
+        
+        # Test connection
+        result = client.execute('SELECT 1')
+        print(f'✅ ClickHouse connection successful: {result}')
+        
+        # List tables
+        tables = client.execute('SHOW TABLES FROM quantx')
+        print(f'📊 Tables in quantx database: {tables}')
+        
+        # Check if our tables exist
+        for table in ['labels', 'level_labels']:
+            exists = client.execute(f\"EXISTS TABLE quantx.{table}\")
+            print(f\"Table quantx.{table} exists: {exists[0][0]}\")"
+    
+    - name: Create Tables if Needed
+      env:
+        CLICKHOUSE_HOST: ${{ secrets.CLICKHOUSE_HOST }}
+        CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
+        CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
+        CLICKHOUSE_DATABASE: quantx
+        CLICKHOUSE_PORT: 9440
+        CLICKHOUSE_SECURE: true
+      run: |
+        python scripts/create_tables.py || echo "Tables creation script not found, skipping"

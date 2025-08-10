@@ -1,0 +1,34 @@
+{
+  "instrument_id": "EURUSD",
+  "granularity": "H4",
+  "ts": "2024-01-10T13:00:00Z",
+  "labels": {
+    "enhanced_triple_barrier": {
+      "label": 1,
+      "barrier_hit": "upper",
+      "time_to_barrier": 3,
+      "barrier_price": 1.0990,
+      "level_adjusted": true,
+      "nearest_support": 1.0920,
+      "nearest_resistance": 1.0990
+    },
+    "vol_scaled_return": {
+      "value": 2.35,
+      "quantile": 0.85,
+      "raw_return": 0.0025,
+      "volatility_factor": 0.0025
+    },
+    "mfe_mae": {
+      "mfe": 0.0045,
+      "mae": -0.0012,
+      "profit_factor": 3.75,
+      "mfe_time": 2,
+      "mae_time": 1
+    },
+    "return_quantile": 85,
+    "forward_return": 0.0025
+  },
+  "computation_time_ms": 45,
+  "cache_hit": false,
+  "version": "1.0.0"
+}

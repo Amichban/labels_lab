@@ -1,0 +1,22 @@
+{
+  "job_id": "bf_20240110_eurusd_h4_abc123",
+  "status": "running",
+  "progress": {
+    "completed_candles": 125000,
+    "total_candles": 186000,
+    "percentage": 67.2,
+    "current_date": "2024-01-21T00:00:00Z",
+    "chunks_completed": 12,
+    "chunks_total": 19
+  },
+  "performance": {
+    "candles_per_minute": 2750.5,
+    "avg_compute_time_ms": 22.1,
+    "cache_hit_rate": 0.94,
+    "error_rate": 0.001
+  },
+  "estimated_completion": "2024-01-10T15:30:00Z",
+  "created_at": "2024-01-10T14:15:00Z",
+  "updated_at": "2024-01-10T15:12:00Z",
+  "error_message": null
+}

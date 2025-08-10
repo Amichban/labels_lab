@@ -1,0 +1,429 @@
+{
+  "info": {
+    "name": "Label Computation System API",
+    "description": "High-performance label computation system for quantitative trading",
+    "version": "1.0.0",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{api_token}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "https://api.labelcompute.com/v1",
+      "type": "string"
+    },
+    {
+      "key": "api_token",
+      "value": "your_jwt_token_here",
+      "type": "string"
+    },
+    {
+      "key": "api_key",
+      "value": "your_api_key_here",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Label Computation",
+      "item": [
+        {
+          "name": "Compute Labels for Single Candle",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Request-ID",
+                "value": "{{$guid}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"instrument_id\": \"EURUSD\",\n  \"granularity\": \"H4\",\n  \"candle\": {\n    \"ts\": \"2024-01-10T13:00:00Z\",\n    \"open\": 1.0950,\n    \"high\": 1.0970,\n    \"low\": 1.0940,\n    \"close\": 1.0965,\n    \"volume\": 1250000,\n    \"atr_14\": 0.0025\n  },\n  \"label_types\": [\n    \"enhanced_triple_barrier\",\n    \"vol_scaled_return\",\n    \"mfe_mae\"\n  ],\n  \"options\": {\n    \"horizon_periods\": 6,\n    \"use_cache\": true\n  }\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/labels/compute",
+              "host": ["{{base_url}}"],
+              "path": ["labels", "compute"]
+            },
+            "description": "Compute all configured labels for a single candle in real-time"
+          },
+          "response": [
+            {
+              "name": "Success",
+              "originalRequest": {
+                "method": "POST",
+                "header": [],
+                "body": {
+                  "mode": "raw",
+                  "raw": ""
+                },
+                "url": {
+                  "raw": "{{base_url}}/labels/compute",
+                  "host": ["{{base_url}}"],
+                  "path": ["labels", "compute"]
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "X-Compute-Time-Ms",
+                  "value": "45"
+                },
+                {
+                  "key": "X-Cache-Hit",
+                  "value": "false"
+                }
+              ],
+              "body": "{\n  \"instrument_id\": \"EURUSD\",\n  \"granularity\": \"H4\",\n  \"ts\": \"2024-01-10T13:00:00Z\",\n  \"labels\": {\n    \"enhanced_triple_barrier\": {\n      \"label\": 1,\n      \"barrier_hit\": \"upper\",\n      \"time_to_barrier\": 3,\n      \"barrier_price\": 1.0990,\n      \"level_adjusted\": true\n    },\n    \"vol_scaled_return\": {\n      \"value\": 2.35,\n      \"quantile\": 0.85\n    },\n    \"mfe_mae\": {\n      \"mfe\": 0.0045,\n      \"mae\": -0.0012,\n      \"profit_factor\": 3.75\n    }\n  },\n  \"computation_time_ms\": 45,\n  \"cache_hit\": false,\n  \"version\": \"1.0.0\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Query Labels",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/labels?instrument_id=EURUSD&granularity=H4&start_date=2024-01-01T00:00:00Z&end_date=2024-01-02T00:00:00Z&page=1&per_page=100",
+              "host": ["{{base_url}}"],
+              "path": ["labels"],
+              "query": [
+                {
+                  "key": "instrument_id",
+                  "value": "EURUSD"
+                },
+                {
+                  "key": "granularity",
+                  "value": "H4"
+                },
+                {
+                  "key": "start_date",
+                  "value": "2024-01-01T00:00:00Z"
+                },
+                {
+                  "key": "end_date",
+                  "value": "2024-01-02T00:00:00Z"
+                },
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "per_page",
+                  "value": "100"
+                }
+              ]
+            },
+            "description": "Retrieve computed labels with filtering and pagination"
+          }
+        },
+        {
+          "name": "Get Labels by Timestamp",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/labels/EURUSD/H4/2024-01-10T13:00:00Z",
+              "host": ["{{base_url}}"],
+              "path": ["labels", "EURUSD", "H4", "2024-01-10T13:00:00Z"]
+            },
+            "description": "Get all labels for a specific candle timestamp"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Batch Operations",
+      "item": [
+        {
+          "name": "Start Batch Backfill",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"instrument_id\": \"EURUSD\",\n  \"granularity\": \"H4\",\n  \"start_date\": \"2024-01-01T00:00:00Z\",\n  \"end_date\": \"2024-01-31T23:59:59Z\",\n  \"label_types\": [\n    \"enhanced_triple_barrier\",\n    \"vol_scaled_return\",\n    \"return_quantile\"\n  ],\n  \"options\": {\n    \"chunk_size\": 10000,\n    \"parallel_workers\": 8,\n    \"force_recompute\": false\n  }\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/batch/backfill",
+              "host": ["{{base_url}}"],
+              "path": ["batch", "backfill"]
+            },
+            "description": "Start a batch backfill operation for computing labels"
+          }
+        },
+        {
+          "name": "Get Batch Job Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/batch/jobs/{{job_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["batch", "jobs", "{{job_id}}"]
+            },
+            "description": "Monitor the progress of a batch backfill operation"
+          }
+        },
+        {
+          "name": "List Batch Jobs",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/batch/jobs?status=running&page=1&per_page=20",
+              "host": ["{{base_url}}"],
+              "path": ["batch", "jobs"],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "running"
+                },
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "per_page",
+                  "value": "20"
+                }
+              ]
+            },
+            "description": "Get paginated list of batch jobs with filtering"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Health & Monitoring",
+      "item": [
+        {
+          "name": "System Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/health",
+              "host": ["{{base_url}}"],
+              "path": ["health"]
+            },
+            "description": "Comprehensive health check for all system components"
+          }
+        },
+        {
+          "name": "Readiness Probe",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/health/ready",
+              "host": ["{{base_url}}"],
+              "path": ["health", "ready"]
+            },
+            "description": "Kubernetes readiness probe endpoint"
+          }
+        },
+        {
+          "name": "Liveness Probe",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/health/live",
+              "host": ["{{base_url}}"],
+              "path": ["health", "live"]
+            },
+            "description": "Kubernetes liveness probe endpoint"
+          }
+        },
+        {
+          "name": "System Metrics (JSON)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/metrics?format=json&window=1h",
+              "host": ["{{base_url}}"],
+              "path": ["metrics"],
+              "query": [
+                {
+                  "key": "format",
+                  "value": "json"
+                },
+                {
+                  "key": "window",
+                  "value": "1h"
+                }
+              ]
+            },
+            "description": "Get system metrics in JSON format"
+          }
+        },
+        {
+          "name": "System Metrics (Prometheus)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/metrics?format=prometheus",
+              "host": ["{{base_url}}"],
+              "path": ["metrics"],
+              "query": [
+                {
+                  "key": "format",
+                  "value": "prometheus"
+                }
+              ]
+            },
+            "description": "Get system metrics in Prometheus format"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Cache Management",
+      "item": [
+        {
+          "name": "Get Cache Statistics",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/cache/stats",
+              "host": ["{{base_url}}"],
+              "path": ["cache", "stats"]
+            },
+            "description": "Get detailed cache performance statistics"
+          }
+        },
+        {
+          "name": "Warm Cache",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"instrument_id\": \"EURUSD\",\n  \"granularity\": \"H4\",\n  \"hours\": 24\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/cache/warm",
+              "host": ["{{base_url}}"],
+              "path": ["cache", "warm"]
+            },
+            "description": "Pre-warm cache with recent data for an instrument"
+          }
+        },
+        {
+          "name": "Invalidate Cache",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/cache/invalidate?instrument_id=EURUSD&granularity=H4",
+              "host": ["{{base_url}}"],
+              "path": ["cache", "invalidate"],
+              "query": [
+                {
+                  "key": "instrument_id",
+                  "value": "EURUSD"
+                },
+                {
+                  "key": "granularity",
+                  "value": "H4"
+                }
+              ]
+            },
+            "description": "Clear cache for specific instrument or patterns"
+          }
+        }
+      ]
+    }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Set request ID for tracing",
+          "if (!pm.request.headers.has('X-Request-ID')) {",
+          "    pm.request.headers.add({",
+          "        key: 'X-Request-ID',",
+          "        value: pm.variables.replaceIn('{{$guid}}').replace(/-/g, '')",
+          "    });",
+          "}"
+        ]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Global tests for all requests",
+          "pm.test('Response time is reasonable', function () {",
+          "    pm.expect(pm.response.responseTime).to.be.below(5000);",
+          "});",
+          "",
+          "pm.test('Response has proper headers', function () {",
+          "    pm.expect(pm.response.headers.has('Content-Type')).to.be.true;",
+          "});",
+          "",
+          "// Extract job_id from batch operations",
+          "if (pm.response.json() && pm.response.json().job_id) {",
+          "    pm.collectionVariables.set('job_id', pm.response.json().job_id);",
+          "}"
+        ]
+      }
+    }
+  ]
+}

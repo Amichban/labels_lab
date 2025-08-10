@@ -1,0 +1,23 @@
+{
+  "instrument_id": "EURUSD",
+  "granularity": "H4",
+  "candle": {
+    "ts": "2024-01-10T13:00:00Z",
+    "open": 1.0950,
+    "high": 1.0970,
+    "low": 1.0940,
+    "close": 1.0965,
+    "volume": 1250000,
+    "atr_14": 0.0025
+  },
+  "label_types": [
+    "enhanced_triple_barrier",
+    "vol_scaled_return",
+    "mfe_mae"
+  ],
+  "options": {
+    "horizon_periods": 6,
+    "use_cache": true,
+    "force_recompute": false
+  }
+}

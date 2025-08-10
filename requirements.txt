@@ -1,23 +1,55 @@
-# Python dependencies for Claude Native Template
-# Add your project-specific dependencies here
+# Python dependencies for Label Computation System
+
+# Core Dependencies
+clickhouse-driver==0.2.6
+redis[hiredis]==5.0.1
+msgpack==1.0.7
+numpy==1.24.3
+pandas==2.0.3
+
+# API Framework
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.5.0
+pydantic-settings==2.1.0
+
+# Security & Auth
+PyJWT==2.8.0
+python-multipart==0.0.6
+
+# Async Support
+asyncio==3.4.3
+aioredis==2.0.1
+asyncpg==0.29.0
+
+# Monitoring
+prometheus-client==0.19.0
+opentelemetry-api==1.21.0
+opentelemetry-sdk==1.21.0
+opentelemetry-instrumentation-fastapi==0.42b0
 
 # Testing
 pytest>=7.0.0
 pytest-cov>=4.0.0
 pytest-asyncio>=0.21.0
+pytest-mock>=3.12.0
+faker>=20.0.0
 
 # Linting & Formatting
 black>=23.0.0
 flake8>=6.0.0
 mypy>=1.0.0
 bandit>=1.7.0
+isort>=5.12.0
 
 # Development
-pydantic>=2.0.0
 python-dotenv>=1.0.0
+ipython>=8.17.0
+rich>=13.7.0
 
-# Add your application dependencies below:
-# fastapi>=0.100.0
-# sqlalchemy>=2.0.0
-# alembic>=1.11.0
-# redis>=4.5.0
+# Data Processing
+pytz>=2023.3
+python-dateutil>=2.8.2
+
+# Optional: For Firestore integration
+google-cloud-firestore==2.11.1

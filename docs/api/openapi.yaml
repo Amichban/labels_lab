@@ -1,0 +1,1503 @@
+openapi: 3.0.0
+info:
+  title: Label Computation System API
+  version: 1.0.0
+  description: |
+    High-performance label computation system for quantitative trading that processes support/resistance level events 
+    and computes forward-looking labels for pattern mining and ML models.
+    
+    Key features:
+    - Dual-mode processing: Batch backfill (minutes) and real-time incremental (<1 second)
+    - Multi-timeframe alignment using lower granularity data for path-dependent calculations
+    - Support for 29 FX pairs and indices with billions of labels
+    
+    Critical SLAs:
+    - Incremental compute: <100ms p99 latency
+    - Batch throughput: 1M+ candles/minute
+    - Cache hit rate: >95% for recent 24 hours
+  contact:
+    name: Label Computation System Team
+    email: support@labelcompute.com
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: https://api.labelcompute.com/v1
+    description: Production server
+  - url: https://staging-api.labelcompute.com/v1
+    description: Staging server
+  - url: http://localhost:8000/v1
+    description: Development server
+
+security:
+  - bearerAuth: []
+  - apiKey: []
+
+tags:
+  - name: Labels
+    description: Label computation operations
+  - name: Batch
+    description: Batch backfill operations
+  - name: Health
+    description: System health and monitoring
+  - name: Cache
+    description: Cache management operations
+
+paths:
+  # ===========================================================================
+  # INCREMENTAL LABEL COMPUTATION
+  # ===========================================================================
+  /labels/compute:
+    post:
+      tags: [Labels]
+      summary: Compute labels for a single candle
+      description: |
+        Compute all configured labels for a single candle in real-time.
+        Target latency: <100ms p99.
+        
+        For path-dependent labels, uses lower granularity data:
+        - H4 → H1 data for horizon checks
+        - D → H4 data for horizon checks  
+        - W → D data for horizon checks
+      operationId: computeLabels
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: X-Request-ID
+          in: header
+          description: Unique request identifier for tracing
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: X-Cache-Strategy
+          in: header
+          description: Cache strategy hint
+          required: false
+          schema:
+            type: string
+            enum: [prefer_cache, bypass_cache, refresh_cache]
+            default: prefer_cache
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CandleLabelRequest'
+            example:
+              instrument_id: "EURUSD"
+              granularity: "H4"
+              candle:
+                ts: "2024-01-10T13:00:00Z"
+                open: 1.0950
+                high: 1.0970
+                low: 1.0940
+                close: 1.0965
+                volume: 1250000
+                atr_14: 0.0025
+              label_types:
+                - "enhanced_triple_barrier"
+                - "vol_scaled_return"
+                - "mfe_mae"
+              options:
+                horizon_periods: 6
+                use_cache: true
+      responses:
+        '200':
+          description: Labels computed successfully
+          headers:
+            X-Compute-Time-Ms:
+              description: Computation time in milliseconds
+              schema:
+                type: integer
+                example: 45
+            X-Cache-Hit:
+              description: Whether result came from cache
+              schema:
+                type: boolean
+                example: false
+            X-Rate-Limit-Remaining:
+              description: Requests remaining in current window
+              schema:
+                type: integer
+                example: 99
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComputedLabels'
+              example:
+                instrument_id: "EURUSD"
+                granularity: "H4"
+                ts: "2024-01-10T13:00:00Z"
+                labels:
+                  enhanced_triple_barrier:
+                    label: 1
+                    barrier_hit: "upper"
+                    time_to_barrier: 3
+                    barrier_price: 1.0990
+                    level_adjusted: true
+                  vol_scaled_return:
+                    value: 2.35
+                    quantile: 0.85
+                  mfe_mae:
+                    mfe: 0.0045
+                    mae: -0.0012
+                    profit_factor: 3.75
+                computation_time_ms: 45
+                cache_hit: false
+                version: "1.0.0"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimitExceeded'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ===========================================================================
+  # BATCH OPERATIONS
+  # ===========================================================================
+  /batch/backfill:
+    post:
+      tags: [Batch]
+      summary: Start batch backfill operation
+      description: |
+        Initiate batch computation of labels for a date range.
+        Target throughput: 1M+ candles/minute.
+        
+        Returns immediately with job ID for status tracking.
+      operationId: startBatchBackfill
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BatchBackfillRequest'
+            example:
+              instrument_id: "EURUSD"
+              granularity: "H4"
+              start_date: "2024-01-01T00:00:00Z"
+              end_date: "2024-01-31T23:59:59Z"
+              label_types:
+                - "enhanced_triple_barrier"
+                - "vol_scaled_return"
+                - "return_quantile"
+              options:
+                chunk_size: 10000
+                parallel_workers: 8
+                force_recompute: false
+      responses:
+        '202':
+          description: Backfill job started successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchJobResponse'
+              example:
+                job_id: "bf_20240110_eurusd_h4_abc123"
+                status: "started"
+                estimated_duration_minutes: 45
+                estimated_candles: 186000
+                _links:
+                  self: "/batch/jobs/bf_20240110_eurusd_h4_abc123"
+                  status: "/batch/jobs/bf_20240110_eurusd_h4_abc123/status"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: Backfill already in progress for this range
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  code: "BACKFILL_IN_PROGRESS"
+                  message: "Backfill already running for EURUSD H4"
+                  details:
+                    existing_job_id: "bf_20240109_eurusd_h4_def456"
+
+  /batch/jobs/{job_id}:
+    get:
+      tags: [Batch]
+      summary: Get batch job status
+      description: Monitor the progress of a batch backfill operation
+      operationId: getBatchJobStatus
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          description: Batch job identifier
+          schema:
+            type: string
+            pattern: '^bf_[0-9]{8}_[a-z0-9]+_[a-z0-9]+_[a-z0-9]{6}$'
+          example: "bf_20240110_eurusd_h4_abc123"
+      responses:
+        '200':
+          description: Job status retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchJobStatus'
+              example:
+                job_id: "bf_20240110_eurusd_h4_abc123"
+                status: "running"
+                progress:
+                  completed_candles: 125000
+                  total_candles: 186000
+                  percentage: 67.2
+                  current_date: "2024-01-21T00:00:00Z"
+                performance:
+                  candles_per_minute: 2750
+                  avg_compute_time_ms: 22
+                  cache_hit_rate: 0.94
+                estimated_completion: "2024-01-10T15:30:00Z"
+                created_at: "2024-01-10T14:15:00Z"
+                updated_at: "2024-01-10T15:12:00Z"
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /batch/jobs:
+    get:
+      tags: [Batch]
+      summary: List batch jobs
+      description: Get paginated list of batch jobs with filtering
+      operationId: listBatchJobs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          description: Filter by job status
+          required: false
+          schema:
+            type: string
+            enum: [pending, running, completed, failed, cancelled]
+        - name: instrument_id
+          in: query
+          description: Filter by instrument
+          required: false
+          schema:
+            type: string
+            example: "EURUSD"
+        - name: granularity
+          in: query
+          description: Filter by granularity
+          required: false
+          schema:
+            type: string
+            enum: [M15, H1, H4, D, W]
+        - name: page
+          in: query
+          description: Page number (1-based)
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: per_page
+          in: query
+          description: Items per page
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: sort
+          in: query
+          description: Sort order
+          required: false
+          schema:
+            type: string
+            enum: [created_at_desc, created_at_asc, updated_at_desc]
+            default: created_at_desc
+      responses:
+        '200':
+          description: Jobs list retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchJobsList'
+
+  # ===========================================================================
+  # LABEL QUERIES
+  # ===========================================================================
+  /labels:
+    get:
+      tags: [Labels]
+      summary: Query computed labels
+      description: |
+        Retrieve computed labels with flexible filtering and pagination.
+        Optimized for time-series queries with proper indexing.
+      operationId: getLabels
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: instrument_id
+          in: query
+          required: true
+          description: Instrument identifier
+          schema:
+            type: string
+          example: "EURUSD"
+        - name: granularity
+          in: query
+          required: true
+          description: Time granularity
+          schema:
+            type: string
+            enum: [M15, H1, H4, D, W]
+          example: "H4"
+        - name: start_date
+          in: query
+          required: true
+          description: Start date (inclusive)
+          schema:
+            type: string
+            format: date-time
+          example: "2024-01-01T00:00:00Z"
+        - name: end_date
+          in: query
+          required: true
+          description: End date (exclusive)
+          schema:
+            type: string
+            format: date-time
+          example: "2024-01-31T23:59:59Z"
+        - name: label_types
+          in: query
+          description: Comma-separated list of label types to include
+          required: false
+          schema:
+            type: string
+          example: "enhanced_triple_barrier,vol_scaled_return"
+        - name: enhanced_triple_barrier_label
+          in: query
+          description: Filter by enhanced triple barrier outcome
+          required: false
+          schema:
+            type: integer
+            enum: [-1, 0, 1]
+        - name: return_quantile_min
+          in: query
+          description: Minimum return quantile (0-100)
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 100
+        - name: return_quantile_max
+          in: query
+          description: Maximum return quantile (0-100)
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 100
+        - name: page
+          in: query
+          description: Page number (1-based)
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: per_page
+          in: query
+          description: Items per page
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 100
+        - name: sort
+          in: query
+          description: Sort field and direction
+          required: false
+          schema:
+            type: string
+            enum: [ts_asc, ts_desc, forward_return_asc, forward_return_desc]
+            default: ts_asc
+      responses:
+        '200':
+          description: Labels retrieved successfully
+          headers:
+            X-Query-Time-Ms:
+              description: Query execution time in milliseconds
+              schema:
+                type: integer
+                example: 125
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LabelsList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+  /labels/{instrument_id}/{granularity}/{timestamp}:
+    get:
+      tags: [Labels]
+      summary: Get labels for specific candle
+      description: Retrieve all labels for a specific candle timestamp
+      operationId: getLabelsByTimestamp
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: instrument_id
+          in: path
+          required: true
+          description: Instrument identifier
+          schema:
+            type: string
+          example: "EURUSD"
+        - name: granularity
+          in: path
+          required: true
+          description: Time granularity
+          schema:
+            type: string
+            enum: [M15, H1, H4, D, W]
+          example: "H4"
+        - name: timestamp
+          in: path
+          required: true
+          description: Candle timestamp (ISO 8601)
+          schema:
+            type: string
+            format: date-time
+          example: "2024-01-10T13:00:00Z"
+        - name: label_types
+          in: query
+          description: Comma-separated list of label types to include
+          required: false
+          schema:
+            type: string
+          example: "enhanced_triple_barrier,vol_scaled_return"
+      responses:
+        '200':
+          description: Labels retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComputedLabels'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ===========================================================================
+  # HEALTH & MONITORING
+  # ===========================================================================
+  /health:
+    get:
+      tags: [Health]
+      summary: System health check
+      description: |
+        Comprehensive health check including all dependencies.
+        Used by load balancers and monitoring systems.
+      operationId: getHealth
+      responses:
+        '200':
+          description: System is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              example:
+                status: "healthy"
+                version: "1.0.0"
+                timestamp: "2024-01-10T15:30:00Z"
+                uptime_seconds: 3600
+                checks:
+                  clickhouse: "ok"
+                  redis: "ok"
+                  cache_hit_rate: "ok"
+                  avg_latency_ms: "ok"
+                metrics:
+                  cache_hit_rate: 0.96
+                  avg_computation_ms: 42
+                  active_batch_jobs: 2
+                  labels_computed_last_hour: 125000
+        '503':
+          description: System is unhealthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              example:
+                status: "unhealthy"
+                version: "1.0.0"
+                timestamp: "2024-01-10T15:30:00Z"
+                uptime_seconds: 3600
+                checks:
+                  clickhouse: "error"
+                  redis: "ok"
+                  cache_hit_rate: "degraded"
+                  avg_latency_ms: "warning"
+                errors:
+                  - "ClickHouse connection timeout"
+                  - "Cache hit rate below 90%"
+
+  /health/ready:
+    get:
+      tags: [Health]
+      summary: Readiness probe
+      description: Kubernetes readiness probe endpoint
+      operationId: getReadiness
+      responses:
+        '200':
+          description: Service is ready
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [ready]
+                  timestamp:
+                    type: string
+                    format: date-time
+        '503':
+          description: Service is not ready
+
+  /health/live:
+    get:
+      tags: [Health]
+      summary: Liveness probe
+      description: Kubernetes liveness probe endpoint
+      operationId: getLiveness
+      responses:
+        '200':
+          description: Service is alive
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [alive]
+                  timestamp:
+                    type: string
+                    format: date-time
+
+  /metrics:
+    get:
+      tags: [Health]
+      summary: System metrics
+      description: |
+        Detailed system metrics for monitoring and observability.
+        Includes performance, cache, and business metrics.
+      operationId: getMetrics
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: format
+          in: query
+          description: Response format
+          required: false
+          schema:
+            type: string
+            enum: [json, prometheus]
+            default: json
+        - name: window
+          in: query
+          description: Time window for metrics
+          required: false
+          schema:
+            type: string
+            enum: [5m, 15m, 1h, 6h, 24h]
+            default: 1h
+      responses:
+        '200':
+          description: Metrics retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetricsResponse'
+            text/plain:
+              schema:
+                type: string
+                description: Prometheus format metrics
+
+  # ===========================================================================
+  # CACHE MANAGEMENT
+  # ===========================================================================
+  /cache/stats:
+    get:
+      tags: [Cache]
+      summary: Cache statistics
+      description: Get detailed cache performance statistics
+      operationId: getCacheStats
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Cache stats retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CacheStatsResponse'
+
+  /cache/warm:
+    post:
+      tags: [Cache]
+      summary: Warm cache for instrument
+      description: Pre-load cache with recent data for an instrument
+      operationId: warmCache
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                instrument_id:
+                  type: string
+                  description: Instrument to warm cache for
+                granularity:
+                  type: string
+                  enum: [M15, H1, H4, D, W]
+                hours:
+                  type: integer
+                  minimum: 1
+                  maximum: 168
+                  default: 24
+                  description: Hours of data to cache
+              required: [instrument_id, granularity]
+            example:
+              instrument_id: "EURUSD"
+              granularity: "H4"
+              hours: 24
+      responses:
+        '202':
+          description: Cache warming started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Cache warming started for EURUSD H4"
+                  estimated_completion:
+                    type: string
+                    format: date-time
+
+  /cache/invalidate:
+    delete:
+      tags: [Cache]
+      summary: Invalidate cache entries
+      description: Clear cache for specific instrument or global patterns
+      operationId: invalidateCache
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: instrument_id
+          in: query
+          description: Instrument to invalidate (optional)
+          required: false
+          schema:
+            type: string
+        - name: granularity
+          in: query
+          description: Granularity to invalidate (optional)
+          required: false
+          schema:
+            type: string
+            enum: [M15, H1, H4, D, W]
+        - name: pattern
+          in: query
+          description: Redis key pattern to match
+          required: false
+          schema:
+            type: string
+          example: "labels:EURUSD:H4:*"
+      responses:
+        '200':
+          description: Cache invalidated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Invalidated 1250 cache entries"
+                  keys_deleted:
+                    type: integer
+                    example: 1250
+
+# ===========================================================================
+# COMPONENTS
+# ===========================================================================
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        JWT token containing user claims and permissions.
+        Header format: `Authorization: Bearer <token>`
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: |
+        API key for service-to-service authentication.
+        Header format: `X-API-Key: <key>`
+
+  schemas:
+    # REQUEST SCHEMAS
+    CandleLabelRequest:
+      type: object
+      required: [instrument_id, granularity, candle]
+      properties:
+        instrument_id:
+          type: string
+          description: Instrument identifier (e.g., EURUSD, GBPJPY)
+          pattern: '^[A-Z]{6}$|^[A-Z0-9]+$'
+          example: "EURUSD"
+        granularity:
+          type: string
+          enum: [M15, H1, H4, D, W]
+          description: Time granularity for labels
+        candle:
+          $ref: '#/components/schemas/CandleData'
+        label_types:
+          type: array
+          items:
+            type: string
+          description: Specific label types to compute (optional, computes all if empty)
+          example: ["enhanced_triple_barrier", "vol_scaled_return"]
+        options:
+          type: object
+          properties:
+            horizon_periods:
+              type: integer
+              minimum: 1
+              maximum: 100
+              default: 6
+              description: Forward-looking horizon in periods
+            use_cache:
+              type: boolean
+              default: true
+              description: Whether to use cached results
+            force_recompute:
+              type: boolean
+              default: false
+              description: Force recomputation even if cached
+
+    CandleData:
+      type: object
+      required: [ts, open, high, low, close, volume]
+      properties:
+        ts:
+          type: string
+          format: date-time
+          description: Candle timestamp (aligned to granularity boundary)
+          example: "2024-01-10T13:00:00Z"
+        open:
+          type: number
+          format: double
+          minimum: 0
+          description: Opening price
+        high:
+          type: number
+          format: double
+          minimum: 0
+          description: Highest price
+        low:
+          type: number
+          format: double
+          minimum: 0
+          description: Lowest price
+        close:
+          type: number
+          format: double
+          minimum: 0
+          description: Closing price
+        volume:
+          type: integer
+          minimum: 0
+          description: Volume
+        atr_14:
+          type: number
+          format: double
+          minimum: 0
+          description: 14-period Average True Range (required for some labels)
+
+    BatchBackfillRequest:
+      type: object
+      required: [instrument_id, granularity, start_date, end_date]
+      properties:
+        instrument_id:
+          type: string
+          pattern: '^[A-Z]{6}$|^[A-Z0-9]+$'
+          example: "EURUSD"
+        granularity:
+          type: string
+          enum: [M15, H1, H4, D, W]
+        start_date:
+          type: string
+          format: date-time
+          description: Start date (inclusive)
+        end_date:
+          type: string
+          format: date-time
+          description: End date (exclusive)
+        label_types:
+          type: array
+          items:
+            type: string
+          description: Label types to compute (all if empty)
+        options:
+          type: object
+          properties:
+            chunk_size:
+              type: integer
+              minimum: 1000
+              maximum: 50000
+              default: 10000
+              description: Candles to process per chunk
+            parallel_workers:
+              type: integer
+              minimum: 1
+              maximum: 16
+              default: 8
+              description: Number of parallel workers
+            force_recompute:
+              type: boolean
+              default: false
+              description: Recompute existing labels
+            priority:
+              type: string
+              enum: [low, normal, high]
+              default: normal
+              description: Job priority
+
+    # RESPONSE SCHEMAS
+    ComputedLabels:
+      type: object
+      required: [instrument_id, granularity, ts, labels, computation_time_ms, version]
+      properties:
+        instrument_id:
+          type: string
+        granularity:
+          type: string
+          enum: [M15, H1, H4, D, W]
+        ts:
+          type: string
+          format: date-time
+        labels:
+          type: object
+          description: Computed label values
+          properties:
+            enhanced_triple_barrier:
+              $ref: '#/components/schemas/EnhancedTripleBarrierLabel'
+            vol_scaled_return:
+              $ref: '#/components/schemas/VolScaledReturnLabel'
+            mfe_mae:
+              $ref: '#/components/schemas/MfeMaeLabel'
+            return_quantile:
+              type: integer
+              minimum: 0
+              maximum: 100
+              description: Return quantile bucket (0-100)
+            forward_return:
+              type: number
+              format: double
+              description: Forward return over horizon
+            # Additional labels would be defined here
+        computation_time_ms:
+          type: integer
+          minimum: 0
+          description: Time taken to compute labels
+        cache_hit:
+          type: boolean
+          description: Whether result came from cache
+        version:
+          type: string
+          description: Label computation version
+          example: "1.0.0"
+
+    EnhancedTripleBarrierLabel:
+      type: object
+      required: [label, barrier_hit, time_to_barrier, level_adjusted]
+      properties:
+        label:
+          type: integer
+          enum: [-1, 0, 1]
+          description: "-1=lower barrier hit, 0=no barrier hit, 1=upper barrier hit"
+        barrier_hit:
+          type: string
+          enum: [upper, lower, none]
+          description: Which barrier was hit first
+        time_to_barrier:
+          type: integer
+          minimum: 1
+          description: Periods until barrier hit (or horizon if none)
+        barrier_price:
+          type: number
+          format: double
+          nullable: true
+          description: Price of barrier that was hit
+        level_adjusted:
+          type: boolean
+          description: Whether barriers were adjusted based on S/R levels
+        nearest_support:
+          type: number
+          format: double
+          nullable: true
+          description: Nearest support level price
+        nearest_resistance:
+          type: number
+          format: double
+          nullable: true
+          description: Nearest resistance level price
+
+    VolScaledReturnLabel:
+      type: object
+      required: [value, quantile]
+      properties:
+        value:
+          type: number
+          format: double
+          description: Volatility-scaled return value
+        quantile:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          description: Quantile of the scaled return (0-1)
+        raw_return:
+          type: number
+          format: double
+          description: Raw forward return before scaling
+        volatility_factor:
+          type: number
+          format: double
+          minimum: 0
+          description: ATR-based volatility scaling factor
+
+    MfeMaeLabel:
+      type: object
+      required: [mfe, mae, profit_factor]
+      properties:
+        mfe:
+          type: number
+          format: double
+          description: Maximum Favorable Excursion
+        mae:
+          type: number
+          format: double
+          description: Maximum Adverse Excursion
+        profit_factor:
+          type: number
+          format: double
+          minimum: 0
+          description: Ratio of MFE to MAE
+        mfe_time:
+          type: integer
+          minimum: 1
+          description: Periods to reach MFE
+        mae_time:
+          type: integer
+          minimum: 1
+          description: Periods to reach MAE
+
+    BatchJobResponse:
+      type: object
+      required: [job_id, status, estimated_duration_minutes, estimated_candles]
+      properties:
+        job_id:
+          type: string
+          pattern: '^bf_[0-9]{8}_[a-z0-9]+_[a-z0-9]+_[a-z0-9]{6}$'
+          description: Unique job identifier
+        status:
+          type: string
+          enum: [started, queued]
+          description: Initial job status
+        estimated_duration_minutes:
+          type: integer
+          minimum: 1
+          description: Estimated completion time in minutes
+        estimated_candles:
+          type: integer
+          minimum: 1
+          description: Total candles to process
+        priority:
+          type: string
+          enum: [low, normal, high]
+          description: Job priority
+        _links:
+          type: object
+          description: HATEOAS links for job operations
+          properties:
+            self:
+              type: string
+              format: uri
+              description: Link to job details
+            status:
+              type: string
+              format: uri
+              description: Link to job status
+            cancel:
+              type: string
+              format: uri
+              description: Link to cancel job
+
+    BatchJobStatus:
+      type: object
+      required: [job_id, status, progress, created_at, updated_at]
+      properties:
+        job_id:
+          type: string
+          pattern: '^bf_[0-9]{8}_[a-z0-9]+_[a-z0-9]+_[a-z0-9]{6}$'
+        status:
+          type: string
+          enum: [pending, running, completed, failed, cancelled, paused]
+        progress:
+          type: object
+          required: [completed_candles, total_candles, percentage]
+          properties:
+            completed_candles:
+              type: integer
+              minimum: 0
+            total_candles:
+              type: integer
+              minimum: 1
+            percentage:
+              type: number
+              format: double
+              minimum: 0
+              maximum: 100
+            current_date:
+              type: string
+              format: date-time
+              description: Current processing date
+            chunks_completed:
+              type: integer
+              minimum: 0
+            chunks_total:
+              type: integer
+              minimum: 1
+        performance:
+          type: object
+          properties:
+            candles_per_minute:
+              type: number
+              format: double
+              minimum: 0
+            avg_compute_time_ms:
+              type: number
+              format: double
+              minimum: 0
+            cache_hit_rate:
+              type: number
+              format: double
+              minimum: 0
+              maximum: 1
+            error_rate:
+              type: number
+              format: double
+              minimum: 0
+              maximum: 1
+        estimated_completion:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        error_message:
+          type: string
+          nullable: true
+          description: Error message if status is failed
+
+    BatchJobsList:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/BatchJobStatus'
+        pagination:
+          $ref: '#/components/schemas/PaginationInfo'
+
+    LabelsList:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/ComputedLabels'
+        pagination:
+          $ref: '#/components/schemas/PaginationInfo'
+
+    PaginationInfo:
+      type: object
+      required: [page, per_page, total, total_pages]
+      properties:
+        page:
+          type: integer
+          minimum: 1
+          description: Current page number
+        per_page:
+          type: integer
+          minimum: 1
+          description: Items per page
+        total:
+          type: integer
+          minimum: 0
+          description: Total items count
+        total_pages:
+          type: integer
+          minimum: 0
+          description: Total pages count
+        has_next:
+          type: boolean
+          description: Whether next page exists
+        has_prev:
+          type: boolean
+          description: Whether previous page exists
+        next_page:
+          type: integer
+          nullable: true
+          description: Next page number
+        prev_page:
+          type: integer
+          nullable: true
+          description: Previous page number
+
+    HealthResponse:
+      type: object
+      required: [status, version, timestamp]
+      properties:
+        status:
+          type: string
+          enum: [healthy, degraded, unhealthy]
+        version:
+          type: string
+          description: Application version
+        timestamp:
+          type: string
+          format: date-time
+        uptime_seconds:
+          type: integer
+          minimum: 0
+        checks:
+          type: object
+          additionalProperties:
+            type: string
+            enum: [ok, warning, error]
+          description: Health check results for dependencies
+        metrics:
+          type: object
+          properties:
+            cache_hit_rate:
+              type: number
+              format: double
+              minimum: 0
+              maximum: 1
+            avg_computation_ms:
+              type: number
+              format: double
+              minimum: 0
+            active_batch_jobs:
+              type: integer
+              minimum: 0
+            labels_computed_last_hour:
+              type: integer
+              minimum: 0
+        errors:
+          type: array
+          items:
+            type: string
+          description: Error messages for failed checks
+
+    MetricsResponse:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        window:
+          type: string
+          enum: [5m, 15m, 1h, 6h, 24h]
+        performance:
+          type: object
+          properties:
+            avg_computation_time_ms:
+              type: number
+              format: double
+            p50_computation_time_ms:
+              type: number
+              format: double
+            p95_computation_time_ms:
+              type: number
+              format: double
+            p99_computation_time_ms:
+              type: number
+              format: double
+            requests_per_second:
+              type: number
+              format: double
+            error_rate:
+              type: number
+              format: double
+              minimum: 0
+              maximum: 1
+        cache:
+          type: object
+          properties:
+            hit_rate:
+              type: number
+              format: double
+              minimum: 0
+              maximum: 1
+            memory_usage_mb:
+              type: number
+              format: double
+            evictions_per_minute:
+              type: number
+              format: double
+            keys_total:
+              type: integer
+        business:
+          type: object
+          properties:
+            labels_computed_total:
+              type: integer
+            unique_instruments:
+              type: integer
+            active_batch_jobs:
+              type: integer
+            avg_batch_throughput_candles_per_min:
+              type: number
+              format: double
+
+    CacheStatsResponse:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        redis:
+          type: object
+          properties:
+            memory_usage_mb:
+              type: number
+              format: double
+            keys_total:
+              type: integer
+            hit_rate:
+              type: number
+              format: double
+              minimum: 0
+              maximum: 1
+            evictions_last_hour:
+              type: integer
+            connections_active:
+              type: integer
+        cache_levels:
+          type: object
+          properties:
+            labels:
+              type: object
+              properties:
+                keys_count:
+                  type: integer
+                hit_rate:
+                  type: number
+                  format: double
+                avg_ttl_minutes:
+                  type: number
+                  format: double
+            lookback_data:
+              type: object
+              properties:
+                keys_count:
+                  type: integer
+                hit_rate:
+                  type: number
+                  format: double
+                avg_ttl_minutes:
+                  type: number
+                  format: double
+            levels:
+              type: object
+              properties:
+                keys_count:
+                  type: integer
+                hit_rate:
+                  type: number
+                  format: double
+                avg_ttl_minutes:
+                  type: number
+                  format: double
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Machine-readable error code
+              example: "VALIDATION_ERROR"
+            message:
+              type: string
+              description: Human-readable error message
+              example: "Invalid input data"
+            details:
+              type: array
+              items:
+                type: object
+                properties:
+                  field:
+                    type: string
+                    description: Field name with error
+                  message:
+                    type: string
+                    description: Field-specific error message
+                  code:
+                    type: string
+                    description: Field-specific error code
+              description: Detailed validation errors
+            trace_id:
+              type: string
+              description: Request trace ID for debugging
+              example: "req_abc123def456"
+
+  responses:
+    BadRequest:
+      description: Bad request - invalid parameters
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: "BAD_REQUEST"
+              message: "Invalid request parameters"
+              trace_id: "req_abc123def456"
+
+    Unauthorized:
+      description: Authentication required
+      headers:
+        WWW-Authenticate:
+          description: Authentication method required
+          schema:
+            type: string
+            example: 'Bearer realm="api", error="invalid_token"'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: "UNAUTHORIZED"
+              message: "Authentication required"
+              trace_id: "req_abc123def456"
+
+    ValidationError:
+      description: Validation error - invalid input data
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: "VALIDATION_ERROR"
+              message: "Invalid input data"
+              details:
+                - field: "candle.close"
+                  message: "Must be greater than 0"
+                  code: "MIN_VALUE"
+                - field: "granularity"
+                  message: "Must be one of: M15, H1, H4, D, W"
+                  code: "INVALID_ENUM"
+              trace_id: "req_abc123def456"
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: "NOT_FOUND"
+              message: "Labels not found for specified parameters"
+              trace_id: "req_abc123def456"
+
+    RateLimitExceeded:
+      description: Rate limit exceeded
+      headers:
+        X-RateLimit-Limit:
+          description: Request limit per window
+          schema:
+            type: integer
+            example: 1000
+        X-RateLimit-Remaining:
+          description: Requests remaining in window
+          schema:
+            type: integer
+            example: 0
+        X-RateLimit-Reset:
+          description: Unix timestamp when limit resets
+          schema:
+            type: integer
+            example: 1640995200
+        Retry-After:
+          description: Seconds until requests can be made again
+          schema:
+            type: integer
+            example: 60
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: "RATE_LIMIT_EXCEEDED"
+              message: "Too many requests"
+              details:
+                - message: "Rate limit of 1000 requests per hour exceeded"
+              trace_id: "req_abc123def456"
+
+    InternalError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: "INTERNAL_ERROR"
+              message: "An internal error occurred"
+              trace_id: "req_abc123def456"
