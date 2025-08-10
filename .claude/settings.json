@@ -1,0 +1,117 @@
+{
+  "project": {
+    "name": "Claude Native Template",
+    "type": "monorepo",
+    "language": ["typescript", "python"],
+    "framework": ["nextjs", "fastapi"]
+  },
+  
+  "agents": {
+    "autoDelegate": true,
+    "defaultTimeout": 30000,
+    "maxContextSize": 100000,
+    "preferredAgents": {
+      "prd": "discovery-writer",
+      "ux": "journey-planner", 
+      "api": "api-contractor",
+      "test": "test-runner",
+      "migration": "migrator",
+      "setup": "scaffolder"
+    }
+  },
+  
+  "tools": {
+    "allowedTools": [
+      "read_file",
+      "write_file",
+      "edit_file",
+      "bash",
+      "search",
+      "grep",
+      "webfetch"
+    ],
+    "restrictedCommands": [
+      "rm -rf /",
+      "chmod 777",
+      "curl | bash",
+      "wget | sh"
+    ]
+  },
+  
+  "paths": {
+    "protectedPaths": [
+      ".env*",
+      "secrets.*",
+      "*.key",
+      "*.pem",
+      ".git/**",
+      "node_modules/**",
+      "**/venv/**"
+    ],
+    "workspacePaths": {
+      "frontend": "apps/web",
+      "backend": "services/api",
+      "shared": "packages",
+      "docs": "docs"
+    }
+  },
+  
+  "hooks": {
+    "enabled": true,
+    "configFile": ".claude/hooks.yaml",
+    "customHooks": ".claude/hooks/"
+  },
+  
+  "context": {
+    "rulesFile": ".claude/context-rules.yml",
+    "maxFiles": 15,
+    "maxFileSize": 102400,
+    "excludePatterns": [
+      "*.log",
+      "*.lock",
+      "dist/**",
+      "build/**",
+      ".next/**"
+    ]
+  },
+  
+  "sessions": {
+    "enabled": true,
+    "directory": ".claude/sessions",
+    "retention": 30,
+    "autoSave": true
+  },
+  
+  "quality": {
+    "testCoverage": 80,
+    "lintOnSave": true,
+    "formatOnSave": true,
+    "preCommitHooks": true
+  },
+  
+  "integrations": {
+    "github": {
+      "enabled": true,
+      "autoCreateIssues": true,
+      "prTemplate": ".github/pull_request_template.md",
+      "issueTemplates": ".github/ISSUE_TEMPLATE/"
+    },
+    "mcp": {
+      "enabled": true,
+      "configFile": ".claude/mcp.json"
+    }
+  },
+  
+  "commands": {
+    "slash": ".claude/slash-commands.yaml",
+    "custom": ".claude/commands/"
+  },
+  
+  "logging": {
+    "level": "info",
+    "auditLog": ".claude/audit.log",
+    "errorLog": ".claude/error.log",
+    "rotate": "daily",
+    "maxSize": "10MB"
+  }
+}

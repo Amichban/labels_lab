@@ -1,0 +1,331 @@
+name: Smart Testing Template
+
+# This workflow demonstrates intelligent test selection and execution.
+# It's a TEMPLATE - customize for your testing needs.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main, develop]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+
+jobs:
+  # STEP 1: Determine which tests to run based on changes
+  test-selection:
+    name: 🧠 Smart Test Selection
+    runs-on: ubuntu-latest
+    outputs:
+      run-unit: ${{ steps.select.outputs.unit }}
+      run-integration: ${{ steps.select.outputs.integration }}
+      run-e2e: ${{ steps.select.outputs.e2e }}
+    
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Get changed files
+        id: changed
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            CHANGED=$(git diff --name-only origin/${{ github.base_ref }}..HEAD 2>/dev/null || echo "")
+          else
+            CHANGED=$(git diff --name-only HEAD~1..HEAD 2>/dev/null || echo "")
+          fi
+          
+          echo "📝 Changed files:"
+          echo "$CHANGED"
+          echo ""
+          
+          echo "files<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGED" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+      
+      - name: Smart test selection
+        id: select
+        run: |
+          echo "🧠 Selecting tests based on changed files..."
+          
+          CHANGED_FILES="${{ steps.changed.outputs.files }}"
+          
+          # Default: always run unit tests
+          RUN_UNIT="true"
+          RUN_INTEGRATION="false"
+          RUN_E2E="false"
+          
+          # Smart selection based on file patterns
+          if [ -n "$CHANGED_FILES" ]; then
+            # Backend changes → run integration tests
+            if echo "$CHANGED_FILES" | grep -q -E '\.(py|go|java|rb)$|api/|backend/|server/'; then
+              RUN_INTEGRATION="true"
+              echo "  🔸 Backend changes detected → Will run integration tests"
+            fi
+            
+            # Frontend changes → run E2E tests
+            if echo "$CHANGED_FILES" | grep -q -E '\.(jsx?|tsx?|vue|svelte)$|frontend/|client/|components/'; then
+              RUN_E2E="true"
+              echo "  🔸 Frontend changes detected → Will run E2E tests"
+            fi
+            
+            # Config/Infrastructure → run all tests
+            if echo "$CHANGED_FILES" | grep -q -E 'docker|k8s|terraform|\.env|config/'; then
+              RUN_INTEGRATION="true"
+              RUN_E2E="true"
+              echo "  🔸 Config/Infra changes detected → Will run all test types"
+            fi
+          fi
+          
+          echo ""
+          echo "📊 Test selection results:"
+          echo "  Unit Tests: $RUN_UNIT"
+          echo "  Integration Tests: $RUN_INTEGRATION"
+          echo "  E2E Tests: $RUN_E2E"
+          
+          echo "unit=$RUN_UNIT" >> $GITHUB_OUTPUT
+          echo "integration=$RUN_INTEGRATION" >> $GITHUB_OUTPUT
+          echo "e2e=$RUN_E2E" >> $GITHUB_OUTPUT
+
+  # STEP 2: Run Unit Tests
+  unit-tests:
+    name: 🧪 Unit Tests
+    runs-on: ubuntu-latest
+    needs: test-selection
+    if: needs.test-selection.outputs.run-unit == 'true'
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
+      - name: Install dependencies
+        run: |
+          # Python dependencies
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+            pip install pytest pytest-cov
+          fi
+          
+          # Node dependencies
+          if [ -f package.json ]; then
+            npm install
+          fi
+      
+      - name: Run unit tests
+        run: |
+          echo "🧪 Running unit tests..."
+          
+          # Python tests
+          if [ -d "tests/unit" ] || [ -d "test" ]; then
+            pytest tests/unit -v --tb=short || pytest test -v --tb=short || true
+          else
+            echo "  ℹ️ No Python unit tests found"
+          fi
+          
+          # JavaScript tests
+          if [ -f "package.json" ] && grep -q "test" package.json; then
+            npm test || true
+          else
+            echo "  ℹ️ No JavaScript tests configured"
+          fi
+          
+          echo "✅ Unit tests completed"
+
+  # STEP 3: Run Integration Tests
+  integration-tests:
+    name: 🔗 Integration Tests
+    runs-on: ubuntu-latest
+    needs: [test-selection, unit-tests]
+    if: needs.test-selection.outputs.run-integration == 'true'
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup test environment
+        run: |
+          echo "🔧 Setting up integration test environment..."
+          echo "  EXAMPLE: In production, you would:"
+          echo "  - Start test database (docker-compose up -d db)"
+          echo "  - Start test services (docker-compose up -d)"
+          echo "  - Wait for services to be ready"
+          echo ""
+      
+      - name: Run integration tests
+        run: |
+          echo "🔗 Running integration tests..."
+          
+          if [ -d "tests/integration" ]; then
+            echo "  EXAMPLE: pytest tests/integration -v"
+            echo "  EXAMPLE: npm run test:integration"
+          else
+            echo "  ℹ️ No integration tests found"
+            echo "  Create tests/integration/ directory for integration tests"
+          fi
+          
+          echo "✅ Integration tests completed (simulated)"
+
+  # STEP 4: Run E2E Tests
+  e2e-tests:
+    name: 🌐 E2E Tests
+    runs-on: ubuntu-latest
+    needs: [test-selection, unit-tests]
+    if: needs.test-selection.outputs.run-e2e == 'true'
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Run E2E tests
+        run: |
+          echo "🌐 Running E2E tests..."
+          
+          if [ -d "tests/e2e" ] || [ -d "e2e" ]; then
+            echo "  EXAMPLE: npx playwright test"
+            echo "  EXAMPLE: npx cypress run"
+            echo "  EXAMPLE: npm run test:e2e"
+          else
+            echo "  ℹ️ No E2E tests found"
+            echo "  Create tests/e2e/ directory for E2E tests"
+          fi
+          
+          echo "✅ E2E tests completed (simulated)"
+
+  # STEP 5: Test Summary
+  test-summary:
+    name: 📊 Test Summary
+    runs-on: ubuntu-latest
+    needs: [unit-tests, integration-tests, e2e-tests]
+    if: always()
+    
+    steps:
+      - name: Generate test summary
+        run: |
+          echo "## 📊 Test Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Unit tests status
+          if [ "${{ needs.unit-tests.result }}" = "success" ]; then
+            echo "✅ **Unit Tests**: Passed" >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ needs.unit-tests.result }}" = "skipped" ]; then
+            echo "⏭️ **Unit Tests**: Skipped" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Unit Tests**: Failed" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # Integration tests status
+          if [ "${{ needs.integration-tests.result }}" = "success" ]; then
+            echo "✅ **Integration Tests**: Passed" >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ needs.integration-tests.result }}" = "skipped" ]; then
+            echo "⏭️ **Integration Tests**: Skipped (no backend changes)" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Integration Tests**: Failed" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # E2E tests status
+          if [ "${{ needs.e2e-tests.result }}" = "success" ]; then
+            echo "✅ **E2E Tests**: Passed" >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ needs.e2e-tests.result }}" = "skipped" ]; then
+            echo "⏭️ **E2E Tests**: Skipped (no frontend changes)" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **E2E Tests**: Failed" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 💡 Next Steps" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ needs.unit-tests.result }}" = "failure" ] || \
+             [ "${{ needs.integration-tests.result }}" = "failure" ] || \
+             [ "${{ needs.e2e-tests.result }}" = "failure" ]; then
+            echo "1. Check the failed test logs above" >> $GITHUB_STEP_SUMMARY
+            echo "2. Fix the failing tests locally" >> $GITHUB_STEP_SUMMARY
+            echo "3. Push the fixes to trigger a new test run" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "All tests passed! ✨" >> $GITHUB_STEP_SUMMARY
+            echo "Your changes are ready for review." >> $GITHUB_STEP_SUMMARY
+          fi
+      
+      - name: Comment on PR (if applicable)
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const unitStatus = '${{ needs.unit-tests.result }}';
+            const integrationStatus = '${{ needs.integration-tests.result }}';
+            const e2eStatus = '${{ needs.e2e-tests.result }}';
+            
+            let comment = '## 🧪 Test Results\n\n';
+            
+            // Add status for each test type
+            if (unitStatus === 'success') {
+              comment += '✅ **Unit Tests**: All passed\n';
+            } else if (unitStatus === 'skipped') {
+              comment += '⏭️ **Unit Tests**: Skipped\n';
+            } else {
+              comment += '❌ **Unit Tests**: Failed\n';
+            }
+            
+            if (integrationStatus === 'success') {
+              comment += '✅ **Integration Tests**: All passed\n';
+            } else if (integrationStatus === 'skipped') {
+              comment += '⏭️ **Integration Tests**: Skipped (no backend changes detected)\n';
+            } else {
+              comment += '❌ **Integration Tests**: Failed\n';
+            }
+            
+            if (e2eStatus === 'success') {
+              comment += '✅ **E2E Tests**: All passed\n';
+            } else if (e2eStatus === 'skipped') {
+              comment += '⏭️ **E2E Tests**: Skipped (no frontend changes detected)\n';
+            } else {
+              comment += '❌ **E2E Tests**: Failed\n';
+            }
+            
+            comment += '\n---\n';
+            comment += '*Smart test selection based on changed files*';
+            
+            // Post comment
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+  # STEP 6: Coverage Report (optional)
+  coverage:
+    name: 📈 Coverage Report
+    runs-on: ubuntu-latest
+    needs: [unit-tests]
+    if: success()
+    continue-on-error: true
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Generate coverage report
+        run: |
+          echo "📈 Coverage Report (Template)"
+          echo ""
+          echo "In production, this would:"
+          echo "1. Collect coverage from all test runs"
+          echo "2. Generate combined coverage report"
+          echo "3. Upload to Codecov/Coveralls"
+          echo "4. Comment on PR with coverage delta"
+          echo ""
+          echo "Example coverage:"
+          echo "  Overall: 78.5%"
+          echo "  Files changed: 82.3%"
+          echo "  Diff coverage: +2.1%"

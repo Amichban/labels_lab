@@ -1,0 +1,58 @@
+#!/bin/bash
+# Run code review with Claude
+
+echo "🔍 Running code review..."
+
+# Get files to review (changed files or all)
+if [ -n "$(git diff --name-only)" ]; then
+  FILES=$(git diff --name-only)
+  echo "Reviewing changed files..."
+elif [ -n "$(git diff --cached --name-only)" ]; then
+  FILES=$(git diff --cached --name-only)
+  echo "Reviewing staged files..."
+else
+  FILES=$(find src -type f \( -name "*.py" -o -name "*.ts" -o -name "*.tsx" -o -name "*.js" -o -name "*.jsx" \))
+  echo "Reviewing all source files..."
+fi
+
+# Create review request
+REVIEW_REQUEST=$(cat << 'EOF'
+Please review the following code for:
+
+1. Security vulnerabilities (OWASP Top 10)
+2. Performance issues
+3. Code quality and maintainability
+4. Best practices violations
+5. Missing error handling
+6. Test coverage gaps
+
+Format output as:
+🔴 Critical: [issue]
+🟡 Important: [issue]
+🟢 Suggestion: [improvement]
+
+Code to review:
+EOF
+)
+
+# Run review with Claude
+for FILE in $FILES; do
+  if [ -f "$FILE" ]; then
+    echo ""
+    echo "Reviewing: $FILE"
+    echo "---"
+    
+    # Use Claude reviewer agent
+    claude reviewer << INPUT
+$REVIEW_REQUEST
+
+File: $FILE
+$(cat "$FILE")
+INPUT
+    
+    echo "---"
+  fi
+done
+
+echo ""
+echo "✅ Code review complete!"

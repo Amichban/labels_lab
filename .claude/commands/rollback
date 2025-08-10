@@ -1,0 +1,83 @@
+#!/bin/bash
+# Rollback to a previous state
+
+echo "🔄 Rolling back changes..."
+
+# Check if git repository
+if [ ! -d ".git" ]; then
+  echo "❌ Not a git repository"
+  exit 1
+fi
+
+# Get session ID from argument or use latest
+SESSION_ID="$1"
+
+if [ -z "$SESSION_ID" ]; then
+  # Find latest session
+  if [ -d ".claude/sessions" ]; then
+    SESSION_ID=$(ls -t .claude/sessions | head -1)
+    if [ -z "$SESSION_ID" ]; then
+      echo "❌ No sessions found"
+      exit 1
+    fi
+    echo "Using latest session: $SESSION_ID"
+  else
+    echo "❌ No sessions directory found"
+    exit 1
+  fi
+fi
+
+SESSION_DIR=".claude/sessions/$SESSION_ID"
+
+# Check session exists
+if [ ! -d "$SESSION_DIR" ]; then
+  echo "❌ Session not found: $SESSION_ID"
+  echo "Available sessions:"
+  ls -t .claude/sessions 2>/dev/null || echo "None"
+  exit 1
+fi
+
+# Read snapshot
+if [ -f "$SESSION_DIR/snapshot.json" ]; then
+  GIT_HEAD=$(jq -r '.git_head' "$SESSION_DIR/snapshot.json" 2>/dev/null)
+  
+  if [ -n "$GIT_HEAD" ] && [ "$GIT_HEAD" != "unknown" ]; then
+    echo "Rolling back to commit: $GIT_HEAD"
+    
+    # Check for uncommitted changes
+    if [ -n "$(git status --porcelain)" ]; then
+      echo "⚠️  Uncommitted changes detected"
+      read -p "Stash changes? (y/n) " -n 1 -r
+      echo
+      if [[ $REPLY =~ ^[Yy]$ ]]; then
+        git stash push -m "Rollback stash for $SESSION_ID"
+      else
+        echo "Cancelled"
+        exit 1
+      fi
+    fi
+    
+    # Reset to snapshot
+    git reset --hard "$GIT_HEAD"
+    echo "✅ Rolled back to session: $SESSION_ID"
+    
+    # Show what was rolled back
+    if [ -f "$SESSION_DIR/changes.diff" ]; then
+      echo ""
+      echo "Changes that were rolled back:"
+      git diff --stat "$GIT_HEAD" HEAD 2>/dev/null || true
+    fi
+  else
+    echo "❌ No valid git snapshot found"
+    exit 1
+  fi
+else
+  echo "❌ No snapshot found for session"
+  exit 1
+fi
+
+# Log rollback
+echo "[$(date)] Rolled back to session: $SESSION_ID" >> .claude/audit.log
+
+echo ""
+echo "✅ Rollback complete!"

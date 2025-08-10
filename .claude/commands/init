@@ -1,0 +1,172 @@
+#!/bin/bash
+# Initialize a new project with Claude Code template
+
+echo "🚀 Initializing Claude Code Native Project..."
+
+# Create project structure
+echo "Creating project structure..."
+mkdir -p src/{api,web,shared}
+mkdir -p tests/{unit,integration,e2e}
+mkdir -p docs
+mkdir -p scripts
+mkdir -p .github/workflows
+
+# Initialize git if not already
+if [ ! -d ".git" ]; then
+  echo "Initializing git repository..."
+  git init
+  
+  # Create .gitignore
+  cat > .gitignore << EOF
+# Dependencies
+node_modules/
+venv/
+.env
+.env.local
+
+# Build outputs
+dist/
+build/
+*.pyc
+__pycache__/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+
+# Coverage
+coverage/
+.coverage
+*.lcov
+
+# Claude
+.claude/memory.db
+.claude/audit.log
+
+# OS
+.DS_Store
+Thumbs.db
+EOF
+fi
+
+# Create Makefile
+cat > Makefile << 'EOF'
+.PHONY: dev test lint deploy clean
+
+dev:
+	@echo "Starting development servers..."
+	@make -j2 dev-api dev-web
+
+dev-api:
+	cd src/api && uvicorn main:app --reload --port 8000
+
+dev-web:
+	cd src/web && npm run dev
+
+test:
+	@echo "Running tests..."
+	pytest tests/ -v --cov=src
+
+lint:
+	@echo "Running linters..."
+	ruff check src/
+	cd src/web && npm run lint
+
+deploy:
+	@echo "Deploying to Railway..."
+	railway up
+
+clean:
+	find . -type d -name "__pycache__" -exec rm -rf {} +
+	find . -type f -name "*.pyc" -delete
+	rm -rf dist/ build/ coverage/
+EOF
+
+# Create basic API structure
+cat > src/api/__init__.py << 'EOF'
+"""FastAPI Backend Application"""
+__version__ = "0.1.0"
+EOF
+
+cat > src/api/main.py << 'EOF'
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+app = FastAPI(title="API", version="0.1.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+@app.get("/health")
+async def health():
+    return {"status": "healthy"}
+EOF
+
+# Create basic web structure
+cat > src/web/package.json << 'EOF'
+{
+  "name": "web",
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "next": "14.0.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/react": "^18.2.0",
+    "typescript": "^5.0.0"
+  }
+}
+EOF
+
+# Create requirements.txt
+cat > requirements.txt << 'EOF'
+fastapi==0.104.0
+uvicorn[standard]==0.24.0
+pydantic==2.4.0
+sqlalchemy==2.0.0
+alembic==1.12.0
+pytest==7.4.0
+pytest-asyncio==0.21.0
+pytest-cov==4.1.0
+ruff==0.1.0
+black==23.0.0
+EOF
+
+# Install dependencies
+echo "Installing dependencies..."
+if command -v python3 &> /dev/null; then
+  python3 -m venv venv 2>/dev/null || true
+  source venv/bin/activate 2>/dev/null || true
+  pip install -r requirements.txt 2>/dev/null || true
+fi
+
+if command -v npm &> /dev/null; then
+  cd src/web && npm install 2>/dev/null || true
+  cd ../..
+fi
+
+echo "✅ Project initialized successfully!"
+echo ""
+echo "Next steps:"
+echo "1. Review and update CLAUDE.md with your project specifics"
+echo "2. Configure .env with your API keys"
+echo "3. Run 'make dev' to start development"
+echo "4. Use 'claude <task>' to build features"

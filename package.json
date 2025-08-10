@@ -1,0 +1,26 @@
+{
+  "name": "claude-native-template",
+  "version": "1.0.0",
+  "description": "Production-ready template for AI-powered development with Claude Code",
+  "scripts": {
+    "test": "echo 'Configure your test runner'",
+    "test:unit": "echo 'Configure unit tests'",
+    "test:integration": "echo 'Configure integration tests'",
+    "test:e2e": "echo 'Configure E2E tests'",
+    "lint": "echo 'Configure your linter'",
+    "typecheck": "echo 'Configure TypeScript'",
+    "dev": "echo 'Configure development server'",
+    "build": "echo 'Configure build process'",
+    "start": "echo 'Configure production server'"
+  },
+  "keywords": [
+    "claude",
+    "ai",
+    "template",
+    "devops",
+    "cicd"
+  ],
+  "license": "MIT",
+  "devDependencies": {},
+  "dependencies": {}
+}

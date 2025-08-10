@@ -1,0 +1,110 @@
+# Context Filtering Rules for Agents
+# Limits what files each agent can see to avoid context overflow
+
+rules:
+  - name: backend
+    agents: [backend, api]
+    include:
+      - "src/api/**/*.py"
+      - "src/shared/**/*.py"
+      - "requirements.txt"
+      - "alembic.ini"
+      - "tests/backend/**/*.py"
+      - "Dockerfile"
+    exclude:
+      - "**/__pycache__/**"
+      - "*.pyc"
+      - ".pytest_cache/**"
+    max_files: 15
+    
+  - name: frontend
+    agents: [frontend, ui]
+    include:
+      - "src/web/**/*.tsx"
+      - "src/web/**/*.ts"
+      - "src/web/**/*.css"
+      - "package.json"
+      - "tsconfig.json"
+      - "next.config.js"
+      - "tests/frontend/**/*.test.ts"
+    exclude:
+      - "node_modules/**"
+      - ".next/**"
+      - "dist/**"
+    max_files: 15
+    
+  - name: database
+    agents: [database, migration]
+    include:
+      - "alembic/**/*.py"
+      - "src/api/models/**/*.py"
+      - "*.sql"
+      - "docker-compose.yml"
+    exclude:
+      - "alembic/versions/*.pyc"
+    max_files: 10
+    
+  - name: devops
+    agents: [devops, deploy]
+    include:
+      - ".github/workflows/**"
+      - "Dockerfile*"
+      - "docker-compose*.yml"
+      - "scripts/**/*.sh"
+      - "Makefile"
+      - "railway.json"
+      - ".env.example"
+    exclude:
+      - ".env"
+      - "*.log"
+    max_files: 12
+    
+  - name: testing
+    agents: [tester, qa]
+    include:
+      - "tests/**/*.py"
+      - "tests/**/*.ts"
+      - "pytest.ini"
+      - "jest.config.js"
+      - "coverage/**"
+      - ".coverage"
+    exclude:
+      - "**/__pycache__/**"
+      - "coverage/html/**"
+    max_files: 20
+    
+  - name: review
+    agents: [reviewer, security]
+    include:
+      - "**/*.py"
+      - "**/*.ts"
+      - "**/*.tsx"
+      - "requirements*.txt"
+      - "package*.json"
+    exclude:
+      - "node_modules/**"
+      - "venv/**"
+      - ".git/**"
+      - "**/__pycache__/**"
+      - "dist/**"
+      - "build/**"
+    max_files: 15
+    
+# Global exclusions (apply to all agents)
+global_exclude:
+  - ".git/**"
+  - ".env"
+  - ".env.local"
+  - "*.log"
+  - "*.sqlite"
+  - "*.db"
+  - ".DS_Store"
+  - "Thumbs.db"
+  - ".claude/sessions/**"
+  - ".claude/memory.db"
+  
+# File size limits
+limits:
+  max_file_size_kb: 100
+  max_total_context_kb: 500
+  max_files_per_agent: 15

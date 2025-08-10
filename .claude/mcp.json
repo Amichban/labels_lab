@@ -1,0 +1,61 @@
+{
+  "mcpServers": {
+    "database": {
+      "command": "npx",
+      "args": ["@modelcontextprotocol/server-postgres"],
+      "env": {
+        "POSTGRES_CONNECTION_STRING": "${DATABASE_URL}"
+      }
+    },
+    "github": {
+      "command": "npx", 
+      "args": ["@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_TOKEN": "${GITHUB_TOKEN}"
+      }
+    },
+    "slack": {
+      "command": "npx",
+      "args": ["@modelcontextprotocol/server-slack"],
+      "env": {
+        "SLACK_TOKEN": "${SLACK_TOKEN}"
+      }
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": ["@modelcontextprotocol/server-filesystem"],
+      "config": {
+        "rootPath": ".",
+        "allowedPaths": ["./src", "./docs", "./tests"]
+      }
+    },
+    "web": {
+      "command": "npx",
+      "args": ["@modelcontextprotocol/server-fetch"],
+      "config": {
+        "allowedDomains": [
+          "api.github.com",
+          "docs.anthropic.com",
+          "railway.app"
+        ]
+      }
+    },
+    "jira": {
+      "command": "npx",
+      "args": ["@modelcontextprotocol/server-jira"],
+      "env": {
+        "JIRA_URL": "${JIRA_URL}",
+        "JIRA_EMAIL": "${JIRA_EMAIL}",
+        "JIRA_API_TOKEN": "${JIRA_API_TOKEN}"
+      }
+    },
+    "memory": {
+      "command": "npx",
+      "args": ["@modelcontextprotocol/server-memory"],
+      "config": {
+        "storePath": ".claude/memory.db",
+        "maxEntries": 1000
+      }
+    }
+  }
+}

@@ -1,0 +1,2016 @@
+# Custom Slash Commands for Claude Code
+# These provide quick access to common workflows
+
+commands:
+  # Memory initialization (Claude Code Best Practice)
+  /init:
+    description: Initialize Claude Code memory structure
+    script: |
+      echo "🚀 Initializing Claude Code memory..."
+      
+      # Run the init script
+      bash .claude/scripts/init-memory.sh
+      
+      echo "✅ Memory structure initialized!"
+      echo "Run '/memory' to edit or '/memory-review' to check health"
+  
+  # Development commands
+  /setup:
+    description: Initialize project with dependencies and structure
+    script: |
+      echo "Setting up project..."
+      python -m venv venv
+      source venv/bin/activate
+      pip install -r requirements.txt
+      npm install --prefix src/web
+      docker-compose up -d
+      alembic upgrade head
+      echo "✅ Project setup complete!"
+  
+  /test:
+    description: Run all tests with coverage
+    script: |
+      echo "Running tests..."
+      pytest tests/ -v --cov=src --cov-report=term-missing
+      npm test --prefix src/web
+      echo "✅ Tests complete!"
+  
+  /deploy:
+    description: Deploy to production
+    script: |
+      echo "Deploying to production..."
+      ./scripts/deploy.sh
+  
+  # Code quality commands  
+  /lint:
+    description: Run linters and formatters
+    script: |
+      echo "Running linters..."
+      black src/
+      isort src/
+      ruff check src/ --fix
+      npm run lint --prefix src/web
+      echo "✅ Linting complete!"
+  
+  /security:
+    description: Run comprehensive security scan
+    script: |
+      echo "🔒 Running comprehensive security scan..."
+      
+      # Run security scanner agent
+      claude security-scanner "Scan entire codebase for vulnerabilities"
+      
+      # Python security
+      if [ -f "requirements.txt" ]; then
+        echo "Scanning Python dependencies..."
+        pip-audit --desc
+        bandit -r . -f json
+        safety check
+      fi
+      
+      # JavaScript security
+      if [ -f "package.json" ]; then
+        echo "Scanning JavaScript dependencies..."
+        npm audit
+        npx snyk test
+      fi
+      
+      # Secret detection
+      echo "Scanning for secrets..."
+      gitleaks detect --source . --verbose
+      
+      # OWASP dependency check
+      if command -v dependency-check &> /dev/null; then
+        dependency-check --scan . --format JSON
+      fi
+      
+      echo "✅ Security scan complete!"
+  
+  /fix-security:
+    description: Auto-fix security vulnerabilities
+    script: |
+      echo "🔧 Auto-fixing security issues..."
+      
+      # Fix dependencies
+      if [ -f "requirements.txt" ]; then
+        pip-audit --fix
+      fi
+      
+      if [ -f "package.json" ]; then
+        npm audit fix
+      fi
+      
+      # Use Claude to fix code issues
+      claude security-scanner "Fix all auto-fixable security issues"
+      
+      echo "✅ Security fixes applied!"
+  
+  /compliance:
+    description: Run compliance checks
+    script: |
+      echo "📋 Running compliance checks..."
+      
+      # GDPR check
+      echo "GDPR Compliance:"
+      grep -r "email\|phone\|ssn\|dob" --include="*.py" --include="*.js" || echo "✅ No obvious PII found"
+      
+      # Security headers check
+      echo "Security Headers:"
+      grep -r "X-Frame-Options\|Content-Security-Policy" . || echo "⚠️ Missing security headers"
+      
+      # License check
+      echo "License Compliance:"
+      npx license-checker --summary
+      
+      echo "✅ Compliance check complete!"
+  
+  # Git commands
+  /commit:
+    description: Create a semantic commit
+    parameters:
+      - name: type
+        description: Commit type (feat, fix, docs, etc.)
+      - name: message
+        description: Commit message
+    script: |
+      git add -A
+      git commit -m "$1: $2"
+      echo "✅ Committed: $1: $2"
+  
+  /pr:
+    description: Create a pull request
+    script: |
+      BRANCH=$(git branch --show-current)
+      git push origin "$BRANCH"
+      gh pr create --fill
+      echo "✅ Pull request created!"
+  
+  # Database commands
+  /migrate:
+    description: Create and apply database migration
+    parameters:
+      - name: message
+        description: Migration description
+    script: |
+      cd src/api
+      alembic revision --autogenerate -m "$1"
+      alembic upgrade head
+      echo "✅ Migration complete: $1"
+  
+  /db-reset:
+    description: Reset database to clean state
+    script: |
+      echo "⚠️  This will delete all data!"
+      read -p "Continue? (y/n) " -n 1 -r
+      echo
+      if [[ $REPLY =~ ^[Yy]$ ]]; then
+        alembic downgrade base
+        alembic upgrade head
+        python scripts/seed_db.py
+        echo "✅ Database reset complete!"
+      fi
+  
+  # Debugging commands
+  /logs:
+    description: Tail application logs
+    script: |
+      tail -f logs/app.log | grep -E "ERROR|WARNING|INFO"
+  
+  /debug:
+    description: Start debugging session
+    script: |
+      echo "Starting debug session..."
+      export DEBUG=true
+      export LOG_LEVEL=DEBUG
+      make dev
+  
+  # Project management
+  /todo:
+    description: Show current tasks from PROJECT_STATE.md
+    script: |
+      echo "Current tasks:"
+      grep -E "^\- \[.\]" .claude/PROJECT_STATE.md
+  
+  /stats:
+    description: Show project statistics
+    script: |
+      echo "📊 Project Statistics"
+      echo "Lines of code:"
+      find src -name "*.py" -o -name "*.ts" -o -name "*.tsx" | xargs wc -l | tail -1
+      echo ""
+      echo "Test coverage:"
+      coverage report | tail -3
+      echo ""
+      echo "Dependencies:"
+      echo "Python: $(pip list | wc -l) packages"
+      echo "Node: $(npm list --depth=0 --prefix src/web | wc -l) packages"
+  
+  # Claude-specific commands
+  /session:
+    description: Show current Claude session info
+    script: |
+      SESSION_DIR=$(ls -t .claude/sessions | head -1)
+      echo "Current session: $SESSION_DIR"
+      if [ -n "$SESSION_DIR" ]; then
+        echo "Files changed:"
+        cat ".claude/sessions/$SESSION_DIR/changes.diff" 2>/dev/null | grep "^+++" | cut -d' ' -f2
+      fi
+  
+  /rollback:
+    description: Rollback to previous state
+    script: |
+      ./claude/commands/rollback
+  
+  # PRD and Planning Commands
+  /prd:
+    description: Create PRD from notes
+    parameters:
+      - name: notes_file
+        description: Path to notes file (optional)
+    script: |
+      NOTES="${1:-notes.md}"
+      echo "Creating PRD from notes..."
+      if [ -f "$NOTES" ]; then
+        claude discovery-writer "Create a PRD from these notes: $(cat $NOTES)"
+      else
+        claude discovery-writer "Create a PRD template for our project"
+      fi
+      echo "✅ PRD created at docs/PRD.md"
+  
+  /plan-ux:
+    description: Plan UX flows from PRD
+    script: |
+      echo "Planning UX flows..."
+      if [ -f "docs/PRD.md" ]; then
+        claude journey-planner "Create UX flows and screen designs based on the PRD at docs/PRD.md"
+      else
+        echo "❌ No PRD found. Run /prd first"
+      fi
+      echo "✅ UX flows created at docs/ux/"
+  
+  /design-api:
+    description: Design API from PRD with full validation
+    script: |
+      echo "🏗️ Designing API with contracts and validation..."
+      if [ -f "docs/PRD.md" ]; then
+        # 1. Generate OpenAPI spec
+        echo "Step 1: Generating OpenAPI specification..."
+        claude api-contractor "Create OpenAPI spec based on the PRD at docs/PRD.md"
+        
+        # 2. Generate Pydantic models
+        echo "Step 2: Generating Pydantic validators..."
+        claude api-contractor "Generate Pydantic models from docs/api/openapi.yaml for FastAPI"
+        
+        # 3. Generate Zod schemas
+        echo "Step 3: Generating Zod schemas..."
+        claude api-contractor "Generate Zod schemas from docs/api/openapi.yaml for TypeScript"
+        
+        # 4. Generate typed clients
+        echo "Step 4: Generating SDK clients..."
+        claude api-contractor "Generate TypeScript SDK client from docs/api/openapi.yaml"
+        claude api-contractor "Generate Python SDK client from docs/api/openapi.yaml"
+        
+        # 5. Generate contract tests
+        echo "Step 5: Generating contract tests..."
+        claude api-contractor "Generate contract tests from docs/api/openapi.yaml"
+        
+        echo "
+✅ API Contract Generation Complete!
+- OpenAPI Spec: docs/api/openapi.yaml
+- Pydantic Models: services/api/schemas/
+- Zod Schemas: sdk/schemas/
+- TypeScript SDK: sdk/clients/typescript/
+- Python SDK: sdk/clients/python/
+- Contract Tests: tests/contract/"
+      else
+        echo "❌ No PRD found. Run /prd first"
+      fi
+  
+  /prd-to-issues:
+    description: Convert PRD to GitHub issues
+    parameters:
+      - name: project
+        description: GitHub project name (optional)
+    script: |
+      .claude/commands/prd-to-issues docs/PRD.md "$1"
+  
+  /discovery:
+    description: Run full discovery process
+    script: |
+      echo "🔍 Running discovery process..."
+      
+      # 1. Create PRD
+      echo "Step 1: Creating PRD..."
+      claude discovery-writer "Create a comprehensive PRD from project notes"
+      
+      # 2. Plan UX
+      echo "Step 2: Planning UX flows..."
+      claude journey-planner "Design user journeys and screens from docs/PRD.md"
+      
+      # 3. Design API
+      echo "Step 3: Designing API..."
+      claude api-contractor "Create OpenAPI specification from docs/PRD.md"
+      
+      # 4. Create issues
+      echo "Step 4: Creating GitHub issues..."
+      .claude/commands/prd-to-issues docs/PRD.md
+      
+      echo "
+✅ Discovery complete!
+- PRD: docs/PRD.md
+- UX Flows: docs/ux/
+- API Spec: docs/api/openapi.yaml
+- GitHub Issues: Created
+
+Next: Start implementation with 'claude /feature <name>'"
+  
+  # Infrastructure Commands
+  /infra-plan:
+    description: Generate Terraform plan
+    parameters:
+      - name: environment
+        description: Environment (dev/staging/prod)
+      - name: change
+        description: Description of change
+    script: |
+      ENV="${1:-dev}"
+      CHANGE="${2:-Review current state}"
+      
+      echo "📋 Generating Terraform plan for $ENV..."
+      
+      cd terraform/$ENV
+      terraform init
+      terraform plan -out=tfplan.binary
+      terraform show tfplan.binary > plan-summary.txt
+      
+      # Use infra-pr agent to analyze
+      claude infra-pr "Analyze this plan and create PR: $(cat plan-summary.txt)"
+      
+      echo "✅ Plan generated. Review before applying!"
+  
+  /infra-cost:
+    description: Estimate infrastructure costs
+    parameters:
+      - name: environment
+        description: Environment to analyze
+    script: |
+      ENV="${1:-dev}"
+      
+      echo "💰 Estimating costs for $ENV..."
+      
+      cd terraform/$ENV
+      infracost breakdown --path . --format table
+      
+      echo "✅ Cost estimate complete!"
+  
+  /infra-validate:
+    description: Validate Terraform configuration
+    script: |
+      echo "🔍 Validating Terraform..."
+      
+      # Find all terraform directories
+      for dir in $(find . -name "*.tf" -exec dirname {} \; | sort -u); do
+        echo "Checking $dir..."
+        cd $dir
+        terraform init -backend=false
+        terraform validate
+        terraform fmt -check
+        tflint
+        cd -
+      done
+      
+      echo "✅ Validation complete!"
+  
+  /infra-security:
+    description: Run infrastructure security scan
+    script: |
+      echo "🔒 Scanning infrastructure for security issues..."
+      
+      # Checkov scan
+      checkov -d terraform/ --framework terraform
+      
+      # tfsec scan
+      tfsec terraform/
+      
+      # OPA policy check if configured
+      if [ -f "policies/terraform.rego" ]; then
+        opa eval -d policies/ -i terraform/tfplan.json "data.terraform.deny[x]"
+      fi
+      
+      echo "✅ Security scan complete!"
+  
+  /infra-drift:
+    description: Detect infrastructure drift
+    parameters:
+      - name: environment
+        description: Environment to check
+    script: |
+      ENV="${1:-dev}"
+      
+      echo "🔄 Checking for drift in $ENV..."
+      
+      cd terraform/$ENV
+      terraform init
+      terraform plan -detailed-exitcode
+      
+      if [ $? -eq 2 ]; then
+        echo "⚠️ Drift detected! Resources have changed outside Terraform."
+        echo "Run 'terraform plan' to see details."
+      else
+        echo "✅ No drift detected. Infrastructure matches configuration."
+      fi
+  
+  # Data Migration Commands
+  /migration-plan:
+    description: Generate migration plan based on volumetrics
+    parameters:
+      - name: description
+        description: What needs to be migrated
+    script: |
+      DESC="${1:-Analyze current schema}"
+      
+      echo "📊 Analyzing volumetrics and planning migration..."
+      
+      # Use migrator agent with volumetrics
+      claude migrator "Read docs/VOLUMETRICS.md and plan migration for: $DESC"
+      
+      echo "✅ Migration plan generated!"
+  
+  /migration-benchmark:
+    description: Benchmark migration performance impact
+    script: |
+      echo "⏱️ Running migration benchmark..."
+      
+      # Backup current state
+      pg_dump $DATABASE_URL > backup_before.sql
+      
+      # Run before benchmark
+      k6 run tests/k6/baseline.js --out json=before.json
+      
+      # Apply migration
+      alembic upgrade head
+      
+      # Run after benchmark  
+      k6 run tests/k6/baseline.js --out json=after.json
+      
+      # Compare results
+      python scripts/compare_benchmarks.py before.json after.json
+      
+      # Rollback for safety
+      psql $DATABASE_URL < backup_before.sql
+      
+      echo "✅ Benchmark complete! Check performance_report.md"
+  
+  /migration-backfill:
+    description: Generate chunked backfill job
+    parameters:
+      - name: table
+        description: Table to backfill
+      - name: chunk_size
+        description: Rows per chunk (default 1000)
+    script: |
+      TABLE="${1:-users}"
+      CHUNK="${2:-1000}"
+      
+      echo "🔄 Generating backfill job for $TABLE..."
+      
+      claude migrator "Create a chunked backfill job for $TABLE with chunk size $CHUNK based on volumetrics"
+      
+      echo "✅ Backfill job created at scripts/backfill_$TABLE.py"
+  
+  /migration-validate:
+    description: Validate migration safety
+    script: |
+      echo "🔍 Validating migration..."
+      
+      # Check for dangerous operations
+      grep -E "DROP|TRUNCATE|DELETE" alembic/versions/*.py && \
+        echo "⚠️ WARNING: Dangerous operations detected!"
+      
+      # Check volumetrics
+      python << 'EOF'
+      import re
+      
+      # Read latest migration
+      from pathlib import Path
+      migrations = list(Path('alembic/versions').glob('*.py'))
+      latest = max(migrations, key=lambda p: p.stat().st_mtime)
+      
+      with open(latest) as f:
+          migration = f.read()
+      
+      # Read volumetrics
+      with open('docs/VOLUMETRICS.md') as f:
+          volumetrics = f.read()
+      
+      # Extract large tables (>1M rows)
+      large_tables = re.findall(r'\| (\w+).*\| [\d,]+,000,000', volumetrics)
+      
+      # Check if migration affects large tables
+      affected = [t for t in large_tables if t in migration]
+      
+      if affected:
+          print(f"⚠️ Migration affects large tables: {', '.join(affected)}")
+          print("Recommend Expand→Backfill→Contract pattern")
+      else:
+          print("✅ Migration looks safe for direct apply")
+      EOF
+      
+      echo "✅ Validation complete!"
+  
+  /migration-monitor:
+    description: Monitor running migration
+    script: |
+      echo "📊 Monitoring migration..."
+      
+      # Monitor database metrics
+      watch -n 1 "psql $DATABASE_URL -c 'SELECT * FROM pg_stat_activity WHERE state != \"idle\"'"
+      
+      # In another terminal, monitor application metrics
+      tail -f logs/migration.log | grep -E "ERROR|WARNING|Progress"
+  
+  # API Contract Commands
+  /api-validate:
+    description: Validate OpenAPI specification
+    script: |
+      echo "🔍 Validating API contracts..."
+      
+      # Validate OpenAPI spec
+      if [ -f "docs/api/openapi.yaml" ]; then
+        npx @apidevtools/swagger-cli validate docs/api/openapi.yaml
+        echo "✅ OpenAPI spec is valid"
+      else
+        echo "❌ No OpenAPI spec found at docs/api/openapi.yaml"
+      fi
+      
+      # Check for breaking changes
+      if [ -f "docs/api/openapi.previous.yaml" ]; then
+        echo "Checking for breaking changes..."
+        npx oasdiff breaking docs/api/openapi.previous.yaml docs/api/openapi.yaml
+      fi
+  
+  /api-generate-validators:
+    description: Generate validators from OpenAPI
+    script: |
+      echo "🔧 Generating validators from OpenAPI..."
+      
+      if [ ! -f "docs/api/openapi.yaml" ]; then
+        echo "❌ No OpenAPI spec found. Run /design-api first"
+        exit 1
+      fi
+      
+      # Generate Pydantic models
+      echo "Generating Pydantic models..."
+      datamodel-codegen \
+        --input docs/api/openapi.yaml \
+        --output services/api/schemas/ \
+        --target-python-version 3.11 \
+        --use-schema-description \
+        --field-constraints
+      
+      # Generate Zod schemas
+      echo "Generating Zod schemas..."
+      npx openapi-zod-client \
+        docs/api/openapi.yaml \
+        --output sdk/schemas/index.ts
+      
+      echo "✅ Validators generated!"
+  
+  /api-generate-sdk:
+    description: Generate typed SDK clients
+    parameters:
+      - name: language
+        description: Language (typescript/python/go)
+    script: |
+      LANG="${1:-typescript}"
+      
+      echo "🚀 Generating $LANG SDK..."
+      
+      if [ ! -f "docs/api/openapi.yaml" ]; then
+        echo "❌ No OpenAPI spec found. Run /design-api first"
+        exit 1
+      fi
+      
+      case $LANG in
+        typescript)
+          npx openapi-typescript-codegen \
+            --input docs/api/openapi.yaml \
+            --output sdk/clients/typescript \
+            --client axios
+          ;;
+        python)
+          openapi-python-client generate \
+            --path docs/api/openapi.yaml \
+            --output-path sdk/clients/python
+          ;;
+        go)
+          oapi-codegen \
+            -package client \
+            -generate types,client \
+            docs/api/openapi.yaml > sdk/clients/go/client.go
+          ;;
+        *)
+          echo "❌ Unsupported language: $LANG"
+          exit 1
+          ;;
+      esac
+      
+      echo "✅ $LANG SDK generated at sdk/clients/$LANG/"
+  
+  /api-changelog:
+    description: Generate API changelog
+    script: |
+      echo "📝 Generating API changelog..."
+      
+      # Use Claude to analyze changes
+      if [ -f "docs/api/openapi.yaml" ] && [ -f "docs/api/openapi.previous.yaml" ]; then
+        claude api-contractor "Generate a detailed changelog comparing openapi.previous.yaml to openapi.yaml with breaking changes highlighted" \
+          --output-format json > api-changes.json
+        
+        # Format as markdown
+        python3 << 'EOF'
+import json
+import datetime
+
+with open('api-changes.json') as f:
+    changes = json.load(f)
+
+changelog = f"""## API Changelog - {datetime.date.today()}
+
+### 🆕 New Endpoints
+"""
+for endpoint in changes.get('added', []):
+    changelog += f"- `{endpoint['method']} {endpoint['path']}` - {endpoint['description']}\n"
+
+changelog += "\n### 📝 Modified Endpoints\n"
+for endpoint in changes.get('modified', []):
+    breaking = "⚠️ BREAKING: " if endpoint.get('breaking') else ""
+    changelog += f"- {breaking}`{endpoint['method']} {endpoint['path']}` - {endpoint['description']}\n"
+
+changelog += "\n### 🗑️ Deprecated Endpoints\n"
+for endpoint in changes.get('deprecated', []):
+    changelog += f"- `{endpoint['method']} {endpoint['path']}` - {endpoint['description']}\n"
+
+with open('docs/api/CHANGELOG.md', 'a') as f:
+    f.write(changelog + "\n---\n")
+
+print(changelog)
+EOF
+        
+        echo "✅ Changelog saved to docs/api/CHANGELOG.md"
+      else
+        echo "❌ Missing OpenAPI specs for comparison"
+      fi
+  
+  /api-mock:
+    description: Start mock API server
+    parameters:
+      - name: port
+        description: Port number (default 3001)
+    script: |
+      PORT="${1:-3001}"
+      
+      echo "🎭 Starting mock API server on port $PORT..."
+      
+      if [ ! -f "docs/api/openapi.yaml" ]; then
+        echo "❌ No OpenAPI spec found. Run /design-api first"
+        exit 1
+      fi
+      
+      # Start Prism mock server
+      npx @stoplight/prism-cli mock \
+        -h 0.0.0.0 \
+        -p $PORT \
+        --errors \
+        docs/api/openapi.yaml
+  
+  /api-test-contract:
+    description: Run API contract tests
+    script: |
+      echo "🧪 Running contract tests..."
+      
+      # Run contract tests
+      if [ -d "tests/contract" ]; then
+        pytest tests/contract/ -v --tb=short
+      else
+        echo "⚠️ No contract tests found. Generating..."
+        claude api-contractor "Generate contract tests from docs/api/openapi.yaml"
+        pytest tests/contract/ -v --tb=short
+      fi
+      
+      echo "✅ Contract tests complete!"
+  
+  /api-docs:
+    description: Generate API documentation
+    parameters:
+      - name: format
+        description: Format (html/markdown/postman)
+    script: |
+      FORMAT="${1:-html}"
+      
+      echo "📚 Generating API documentation ($FORMAT)..."
+      
+      if [ ! -f "docs/api/openapi.yaml" ]; then
+        echo "❌ No OpenAPI spec found. Run /design-api first"
+        exit 1
+      fi
+      
+      case $FORMAT in
+        html)
+          npx @redocly/cli build-docs \
+            docs/api/openapi.yaml \
+            --output docs/api/index.html
+          echo "✅ HTML docs generated at docs/api/index.html"
+          ;;
+        markdown)
+          npx widdershins \
+            --language_tabs 'python:Python' 'javascript:JavaScript' 'go:Go' \
+            --summary docs/api/openapi.yaml \
+            -o docs/api/API.md
+          echo "✅ Markdown docs generated at docs/api/API.md"
+          ;;
+        postman)
+          npx openapi-to-postman \
+            -s docs/api/openapi.yaml \
+            -o docs/api/postman-collection.json
+          echo "✅ Postman collection generated at docs/api/postman-collection.json"
+          ;;
+        *)
+          echo "❌ Unsupported format: $FORMAT"
+          exit 1
+          ;;
+      esac
+  
+  # Frontend/Backend Scaffolding Commands
+  /scaffold-parallel:
+    description: Scaffold frontend and backend for parallel development
+    script: |
+      echo "🚀 Scaffolding for parallel frontend/backend development..."
+      
+      # 1. Generate MSW mocks from OpenAPI
+      echo "Step 1: Generating MSW mocks..."
+      if [ -f "docs/api/openapi.yaml" ]; then
+        claude api-contractor "Generate MSW (Mock Service Worker) handlers from docs/api/openapi.yaml for all endpoints"
+        echo "✅ MSW mocks generated at apps/web/src/mocks/"
+      fi
+      
+      # 2. Setup backend with health checks
+      echo "Step 2: Setting up backend scaffolding..."
+      claude backend "Create FastAPI app with:
+      - Health check endpoints (/healthz, /readyz)
+      - Structured logging middleware
+      - Request ID tracking
+      - Error handling middleware
+      - CORS configuration
+      - Metrics endpoint (/metrics)"
+      
+      # 3. Setup frontend with MSW
+      echo "Step 3: Setting up frontend with MSW..."
+      claude frontend "Setup Next.js with:
+      - MSW integration for development
+      - API client using generated SDK
+      - Error boundary components
+      - Loading states
+      - Environment-based API switching"
+      
+      # 4. Setup test runner
+      echo "Step 4: Configuring test runner..."
+      claude test-runner "Setup continuous testing with:
+      - Jest for unit tests
+      - Playwright for E2E tests
+      - Watch mode for development
+      - Coverage reporting"
+      
+      echo "
+✅ Parallel Development Setup Complete!
+- Backend: services/api/ with health checks
+- Frontend: apps/web/ with MSW mocks
+- Mocks: apps/web/src/mocks/
+- Tests: tests/ with continuous runner
+
+Start developing:
+- Backend: cd services/api && make dev
+- Frontend: cd apps/web && npm run dev (uses mocks)
+- Tests: npm run test:watch"
+  
+  /generate-msw:
+    description: Generate MSW mocks from OpenAPI
+    script: |
+      echo "🎭 Generating MSW mocks from OpenAPI..."
+      
+      if [ ! -f "docs/api/openapi.yaml" ]; then
+        echo "❌ No OpenAPI spec found. Run /design-api first"
+        exit 1
+      fi
+      
+      # Generate MSW handlers
+      npx msw init apps/web/public --save
+      
+      # Generate handlers from OpenAPI
+      cat > generate_msw.js << 'EOF'
+const { parse } = require('yaml');
+const fs = require('fs');
+
+const openapi = parse(fs.readFileSync('docs/api/openapi.yaml', 'utf8'));
+
+let handlers = `import { rest } from 'msw';
+import { faker } from '@faker-js/faker';
+
+export const handlers = [
+`;
+
+// Generate handlers for each endpoint
+for (const [path, methods] of Object.entries(openapi.paths)) {
+  for (const [method, spec] of Object.entries(methods)) {
+    if (['get', 'post', 'put', 'patch', 'delete'].includes(method)) {
+      const operationId = spec.operationId || `${method}_${path.replace(/[{}\/]/g, '_')}`;
+      const response = spec.responses['200'] || spec.responses['201'] || {};
+      
+      handlers += `  rest.${method}('${path}', (req, res, ctx) => {
+    // ${spec.summary || 'Mock handler'}
+    return res(
+      ctx.status(${Object.keys(spec.responses)[0]}),
+      ctx.json(${generateMockData(response)})
+    );
+  }),
+`;
+    }
+  }
+}
+
+handlers += `];`;
+
+function generateMockData(response) {
+  // Generate mock data based on schema
+  return `{
+    // TODO: Generate based on schema
+    id: faker.string.uuid(),
+    created_at: faker.date.recent(),
+  }`;
+}
+
+fs.writeFileSync('apps/web/src/mocks/handlers.ts', handlers);
+console.log('✅ MSW handlers generated');
+EOF
+      
+      node generate_msw.js
+      rm generate_msw.js
+      
+      # Create MSW setup
+      cat > apps/web/src/mocks/browser.ts << 'EOF'
+import { setupWorker } from 'msw';
+import { handlers } from './handlers';
+
+export const worker = setupWorker(...handlers);
+EOF
+      
+      cat > apps/web/src/mocks/server.ts << 'EOF'
+import { setupServer } from 'msw/node';
+import { handlers } from './handlers';
+
+export const server = setupServer(...handlers);
+EOF
+      
+      echo "✅ MSW mocks generated at apps/web/src/mocks/"
+  
+  /scaffold-backend:
+    description: Scaffold backend with health checks and middleware
+    script: |
+      echo "🔧 Scaffolding backend with production features..."
+      
+      # Create FastAPI backend structure
+      mkdir -p services/api/{routes,middleware,models,schemas,core}
+      
+      # Generate main app with health checks
+      cat > services/api/main.py << 'EOF'
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
+import logging
+from prometheus_client import make_asgi_app
+
+from .middleware import LoggingMiddleware, RequestIDMiddleware, ErrorHandlerMiddleware
+from .routes import health, metrics
+from .core.config import settings
+
+# Configure logging
+logging.basicConfig(
+    level=settings.LOG_LEVEL,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    logger.info("Starting application...")
+    yield
+    # Shutdown
+    logger.info("Shutting down application...")
+
+app = FastAPI(
+    title=settings.APP_NAME,
+    version=settings.VERSION,
+    lifespan=lifespan
+)
+
+# Middleware
+app.add_middleware(ErrorHandlerMiddleware)
+app.add_middleware(RequestIDMiddleware)
+app.add_middleware(LoggingMiddleware)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Routes
+app.include_router(health.router, tags=["health"])
+
+# Metrics endpoint
+metrics_app = make_asgi_app()
+app.mount("/metrics", metrics_app)
+
+@app.get("/")
+async def root():
+    return {"message": "API is running", "version": settings.VERSION}
+EOF
+      
+      # Generate health check routes
+      cat > services/api/routes/health.py << 'EOF'
+from fastapi import APIRouter, status
+from typing import Dict
+import asyncio
+from datetime import datetime
+
+router = APIRouter()
+
+@router.get("/healthz", status_code=status.HTTP_200_OK)
+async def health_check() -> Dict:
+    """Basic health check endpoint."""
+    return {
+        "status": "healthy",
+        "timestamp": datetime.utcnow().isoformat(),
+    }
+
+@router.get("/readyz", status_code=status.HTTP_200_OK)
+async def readiness_check() -> Dict:
+    """Readiness check with dependency verification."""
+    checks = {
+        "database": await check_database(),
+        "redis": await check_redis(),
+        "external_api": await check_external_api(),
+    }
+    
+    all_ready = all(checks.values())
+    
+    return {
+        "ready": all_ready,
+        "checks": checks,
+        "timestamp": datetime.utcnow().isoformat(),
+    }
+
+async def check_database() -> bool:
+    # TODO: Implement actual database check
+    await asyncio.sleep(0.01)
+    return True
+
+async def check_redis() -> bool:
+    # TODO: Implement actual Redis check
+    await asyncio.sleep(0.01)
+    return True
+
+async def check_external_api() -> bool:
+    # TODO: Implement actual external API check
+    await asyncio.sleep(0.01)
+    return True
+EOF
+      
+      # Generate logging middleware
+      cat > services/api/middleware/logging.py << 'EOF'
+import time
+import logging
+from fastapi import Request
+from starlette.middleware.base import BaseHTTPMiddleware
+
+logger = logging.getLogger(__name__)
+
+class LoggingMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        start_time = time.time()
+        
+        # Log request
+        logger.info(f"Request: {request.method} {request.url.path}")
+        
+        response = await call_next(request)
+        
+        # Log response
+        process_time = time.time() - start_time
+        logger.info(
+            f"Response: {request.method} {request.url.path} "
+            f"- Status: {response.status_code} - Time: {process_time:.3f}s"
+        )
+        
+        response.headers["X-Process-Time"] = str(process_time)
+        return response
+EOF
+      
+      echo "✅ Backend scaffolded at services/api/"
+  
+  /scaffold-frontend:
+    description: Scaffold frontend with MSW integration
+    script: |
+      echo "🎨 Scaffolding frontend with MSW..."
+      
+      # Initialize MSW in the app
+      cat > apps/web/src/app/providers.tsx << 'EOF'
+'use client';
+
+import { useEffect } from 'react';
+
+export function Providers({ children }: { children: React.ReactNode }) {
+  useEffect(() => {
+    if (process.env.NODE_ENV === 'development') {
+      const { worker } = require('../mocks/browser');
+      worker.start({
+        onUnhandledRequest: 'bypass',
+      });
+    }
+  }, []);
+
+  return <>{children}</>;
+}
+EOF
+      
+      # Create API client with environment switching
+      cat > apps/web/src/lib/api-client.ts << 'EOF'
+import { ApiClient } from '@/sdk/clients/typescript';
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+const USE_MOCKS = process.env.NEXT_PUBLIC_USE_MOCKS === 'true';
+
+export const apiClient = new ApiClient(
+  USE_MOCKS ? '' : API_URL
+);
+
+// Helper for API calls with error handling
+export async function apiCall<T>(
+  fn: () => Promise<T>,
+  options?: {
+    onError?: (error: Error) => void;
+    fallback?: T;
+  }
+): Promise<T> {
+  try {
+    return await fn();
+  } catch (error) {
+    options?.onError?.(error as Error);
+    if (options?.fallback !== undefined) {
+      return options.fallback;
+    }
+    throw error;
+  }
+}
+EOF
+      
+      echo "✅ Frontend scaffolded with MSW at apps/web/"
+  
+  /test-runner:
+    description: Setup continuous test runner
+    script: |
+      echo "🧪 Setting up continuous test runner..."
+      
+      # Create test configuration
+      cat > jest.config.js << 'EOF'
+module.exports = {
+  projects: [
+    {
+      displayName: 'backend',
+      testMatch: ['<rootDir>/services/api/**/*.test.{js,ts,py}'],
+      transform: {
+        '^.+\\.py$': 'jest-python',
+      },
+    },
+    {
+      displayName: 'frontend',
+      testMatch: ['<rootDir>/apps/web/**/*.test.{js,ts,tsx}'],
+      testEnvironment: 'jsdom',
+      setupFilesAfterEnv: ['<rootDir>/apps/web/jest.setup.js'],
+    },
+  ],
+  coverageDirectory: 'coverage',
+  collectCoverageFrom: [
+    'services/api/**/*.{py,ts,js}',
+    'apps/web/**/*.{ts,tsx,js,jsx}',
+    '!**/*.test.*',
+    '!**/node_modules/**',
+  ],
+};
+EOF
+      
+      # Create test watcher script
+      cat > scripts/test-watch.sh << 'EOF'
+#!/bin/bash
+# Continuous test runner that keeps tests green
+
+echo "🧪 Starting continuous test runner..."
+
+# Run tests in watch mode
+npx concurrently \
+  "npm run test:unit -- --watch" \
+  "npm run test:integration -- --watch" \
+  "npm run test:e2e -- --ui"
+EOF
+      
+      chmod +x scripts/test-watch.sh
+      
+      # Create pre-commit hook for tests
+      cat > .git/hooks/pre-commit << 'EOF'
+#!/bin/bash
+# Run tests before commit
+
+echo "Running tests..."
+npm run test:unit || exit 1
+echo "✅ Tests passed"
+EOF
+      
+      chmod +x .git/hooks/pre-commit
+      
+      echo "✅ Test runner configured. Run: ./scripts/test-watch.sh"
+  
+  # Smart Testing Commands
+  /test-pyramid:
+    description: Run tests following pyramid strategy
+    script: |
+      echo "🔺 Running tests in pyramid order..."
+      
+      # 1. Unit tests (fast, many)
+      echo "Level 1: Unit Tests"
+      if npm run test:unit && pytest tests/unit -x; then
+        echo "✅ Unit tests passed"
+      else
+        echo "❌ Unit tests failed - stopping"
+        exit 1
+      fi
+      
+      # 2. Integration tests (medium, some)
+      echo "Level 2: Integration Tests"
+      if npm run test:integration && pytest tests/integration -x; then
+        echo "✅ Integration tests passed"
+      else
+        echo "❌ Integration tests failed - stopping"
+        exit 1
+      fi
+      
+      # 3. E2E tests (slow, few)
+      echo "Level 3: E2E Tests"
+      if npx playwright test; then
+        echo "✅ E2E tests passed"
+      else
+        echo "❌ E2E tests failed"
+        exit 1
+      fi
+      
+      echo "🎉 All pyramid levels passed!"
+  
+  /test-affected:
+    description: Run only tests affected by current changes
+    script: |
+      echo "🎯 Running affected tests only..."
+      
+      # Get changed files
+      CHANGED=$(git diff --name-only HEAD~1)
+      
+      # Use Claude to determine affected tests
+      echo "$CHANGED" | claude test-runner \
+        "Determine which tests to run based on these changed files and run them"
+  
+  /test-flaky:
+    description: Detect and quarantine flaky tests
+    script: |
+      echo "🔍 Detecting flaky tests..."
+      
+      # Run tests multiple times to detect flakes
+      for i in {1..5}; do
+        echo "Run $i of 5..."
+        pytest --json-report --json-report-file=run$i.json
+      done
+      
+      # Analyze results
+      python3 << 'EOF'
+import json
+import glob
+
+results = {}
+for file in glob.glob('run*.json'):
+    with open(file) as f:
+        data = json.load(f)
+        for test in data['tests']:
+            name = test['nodeid']
+            if name not in results:
+                results[name] = []
+            results[name].append(test['outcome'])
+
+# Find flaky tests
+flaky = []
+for test, outcomes in results.items():
+    if len(set(outcomes)) > 1:  # Mixed results
+        failure_rate = outcomes.count('failed') / len(outcomes)
+        flaky.append((test, failure_rate))
+
+if flaky:
+    print("🚨 Flaky tests detected:")
+    for test, rate in sorted(flaky, key=lambda x: x[1], reverse=True):
+        print(f"  - {test}: {rate*100:.0f}% failure rate")
+else:
+    print("✅ No flaky tests detected")
+EOF
+      
+      rm run*.json
+  
+  /test-fix:
+    description: Analyze test failures and generate fixes
+    script: |
+      echo "🔧 Analyzing test failures..."
+      
+      # Run tests and capture output
+      pytest --tb=short --json-report 2>&1 | tee test-output.log
+      
+      # Pipe to Claude for analysis
+      cat test-output.log | claude test-runner \
+        "Analyze these test failures and generate fixes as a TODO checklist"
+  
+  /test-coverage:
+    description: Analyze coverage and generate missing tests
+    script: |
+      echo "📊 Analyzing test coverage..."
+      
+      # Generate coverage report
+      coverage run -m pytest
+      coverage report --show-missing > coverage.txt
+      
+      # Find files with low coverage
+      cat coverage.txt | claude test-runner \
+        "Identify files with coverage <80% and generate test cases for uncovered code"
+  
+  /test-monitor:
+    description: Monitor tests in real-time with Claude
+    script: |
+      echo "👁️ Starting real-time test monitoring..."
+      
+      # Create monitoring script
+      cat > monitor.py << 'EOF'
+#!/usr/bin/env python3
+import subprocess
+import sys
+
+def monitor():
+    proc = subprocess.Popen(
+        ['pytest', '--tb=short', '-v'],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True
+    )
+    
+    for line in proc.stdout:
+        sys.stdout.write(line)
+        if 'FAILED' in line or 'ERROR' in line:
+            # Analyze failure immediately
+            result = subprocess.run(
+                ['claude', 'test-runner', 'Quick fix for:', line],
+                capture_output=True,
+                text=True
+            )
+            print(f"💡 Suggestion: {result.stdout}")
+    
+    return proc.wait()
+
+if __name__ == '__main__':
+    sys.exit(monitor())
+EOF
+      
+      python3 monitor.py
+      rm monitor.py
+  
+  /test-benchmark:
+    description: Benchmark test execution times
+    script: |
+      echo "⏱️ Benchmarking test performance..."
+      
+      # Run tests with timing
+      pytest --durations=20 > test-times.txt
+      
+      # Analyze slow tests
+      cat test-times.txt | claude test-runner \
+        "Identify slowest tests and suggest optimizations"
+  
+  # Feature Flag Commands
+  /flag-create:
+    description: Create a new feature flag
+    parameters:
+      - name: flag_name
+        description: Name of the feature flag
+      - name: rollout
+        description: Initial rollout percentage (default 0)
+    script: |
+      FLAG="${1:-new-feature}"
+      ROLLOUT="${2:-0}"
+      
+      echo "🚩 Creating feature flag: $FLAG"
+      
+      # Use Claude to create flag
+      claude flag-manager "Create feature flag '$FLAG' with:
+      - Initial rollout: $ROLLOUT%
+      - Gradual rollout strategy
+      - Monitoring enabled
+      - Auto-cleanup after 30 days at 100%
+      - Wire flag checks in code
+      - Create tests for both paths"
+      
+      echo "✅ Flag created and wired in code"
+  
+  /flag-rollout:
+    description: Change flag rollout percentage
+    parameters:
+      - name: flag_name
+        description: Name of the feature flag
+      - name: percentage
+        description: New rollout percentage
+    script: |
+      FLAG="$1"
+      PERCENTAGE="$2"
+      
+      echo "📊 Updating rollout for $FLAG to $PERCENTAGE%"
+      
+      # Update flag configuration
+      claude flag-manager "Update flag '$FLAG' rollout to $PERCENTAGE%"
+      
+      # Monitor after change
+      python3 .claude/hooks/monitor_flag.py --flag "$FLAG" --duration 300
+      
+      echo "✅ Rollout updated and monitoring for 5 minutes"
+  
+  /flag-status:
+    description: Show status of all feature flags
+    script: |
+      echo "📊 Feature Flag Status"
+      echo "===================="
+      
+      if [ -f "config/flags.yaml" ]; then
+        python3 << 'EOF'
+import yaml
+from datetime import datetime, timedelta
+
+with open('config/flags.yaml') as f:
+    config = yaml.safe_load(f)
+
+for flag_name, flag in config.get('flags', {}).items():
+    rollout = flag.get('rollout', {})
+    created = datetime.fromisoformat(flag.get('created', ''))
+    age_days = (datetime.now() - created).days
+    
+    print(f"\n🚩 {flag_name}")
+    print(f"   Status: {rollout.get('value', 0)}% rollout")
+    print(f"   Age: {age_days} days")
+    print(f"   Owner: {flag.get('owner', 'unassigned')}")
+    
+    if rollout.get('value', 0) == 100 and age_days > 30:
+        print(f"   ⚠️ Ready for cleanup!")
+EOF
+      else
+        echo "No flags configured yet"
+      fi
+  
+  /flag-cleanup:
+    description: Find and cleanup stale flags
+    script: |
+      echo "🧹 Scanning for stale flags..."
+      
+      # Use Claude to find stale flags
+      claude flag-manager "Scan codebase for stale flags:
+      1. Find flags at 100% for >30 days
+      2. Find unused flags (0 evaluations in 30 days)
+      3. Find flags past sunset date
+      For each stale flag:
+      - Show usage locations
+      - Generate cleanup PR
+      - Update configuration"
+      
+      echo "✅ Cleanup PRs generated for stale flags"
+  
+  /flag-monitor:
+    description: Monitor flag performance
+    parameters:
+      - name: flag_name
+        description: Flag to monitor
+      - name: duration
+        description: Duration in seconds (default 300)
+    script: |
+      FLAG="$1"
+      DURATION="${2:-300}"
+      
+      echo "📊 Monitoring flag $FLAG for ${DURATION}s..."
+      
+      python3 << EOF
+import time
+import random
+
+# Simulate monitoring
+for i in range(5):
+    error_rate = random.uniform(0, 0.05)
+    latency = random.uniform(50, 200)
+    
+    print(f"[{i*60}s] Error rate: {error_rate:.2%}, Latency: {latency:.0f}ms")
+    
+    if error_rate > 0.02:
+        print("⚠️ High error rate detected! Consider rollback.")
+    
+    time.sleep(1)
+
+print("✅ Monitoring complete. Flag is stable.")
+EOF
+  
+  /flag-wire:
+    description: Add flag check to code
+    parameters:
+      - name: flag_name
+        description: Flag name
+      - name: file
+        description: File to add flag check
+    script: |
+      FLAG="$1"
+      FILE="$2"
+      
+      echo "🔌 Wiring flag $FLAG in $FILE"
+      
+      claude flag-manager "Add feature flag check for '$FLAG' in $FILE:
+      - Detect language/framework
+      - Add appropriate flag check
+      - Preserve existing logic in else branch
+      - Add TODO comment for cleanup"
+      
+      echo "✅ Flag wired in code"
+  
+  /flag-test:
+    description: Test both paths of a feature flag
+    parameters:
+      - name: flag_name
+        description: Flag to test
+    script: |
+      FLAG="$1"
+      
+      echo "🧪 Testing both paths of flag $FLAG"
+      
+      # Test with flag disabled
+      echo "Testing with flag OFF..."
+      export FEATURE_FLAGS_${FLAG^^}=false
+      npm test -- --grep "$FLAG"
+      pytest -k "$FLAG" --ff-disabled
+      
+      # Test with flag enabled
+      echo "Testing with flag ON..."
+      export FEATURE_FLAGS_${FLAG^^}=true
+      npm test -- --grep "$FLAG"
+      pytest -k "$FLAG" --ff-enabled
+      
+      echo "✅ Both paths tested successfully"
+  
+  # Trunk-based development
+  /trunk-merge:
+    description: Merge feature to trunk with flag protection
+    parameters:
+      - name: feature
+        description: Feature branch name
+    script: |
+      FEATURE="$1"
+      
+      echo "🌲 Merging to trunk with flag protection..."
+      
+      # Check if feature has flag
+      FLAG_NAME=$(git log --oneline -1 | grep -oP 'flag:\K[\w-]+' || echo "")
+      
+      if [ -z "$FLAG_NAME" ]; then
+        echo "⚠️ No feature flag found. Creating one..."
+        claude flag-manager "Create flag for feature $FEATURE with 0% rollout"
+        FLAG_NAME="feature-$FEATURE"
+      fi
+      
+      # Merge to trunk
+      git checkout main
+      git merge --no-ff "feature/$FEATURE" \
+        -m "feat: Merge $FEATURE (flag: $FLAG_NAME)"
+      
+      echo "✅ Merged to trunk. Feature behind flag: $FLAG_NAME"
+      echo "Use '/flag-rollout $FLAG_NAME <percentage>' to enable"
+  
+  # Custom workflows
+  /feature:
+    description: Start new feature with flag
+    parameters:
+      - name: name
+        description: Feature name
+    script: |
+      FEATURE="$1"
+      
+      # Create feature branch
+      git checkout -b "feature/$FEATURE"
+      
+      # Create feature flag immediately
+      FLAG_NAME="${FEATURE//_/-}"
+      claude flag-manager "Create feature flag '$FLAG_NAME' with 0% rollout"
+      
+      # Update PROJECT_STATE.md
+      echo "- [ ] Implement $FEATURE (flag: $FLAG_NAME)" >> .claude/PROJECT_STATE.md
+      
+      # Create feature directory
+      mkdir -p "src/features/$FEATURE"
+      
+      echo "✅ Feature branch created: feature/$FEATURE"
+      echo "✅ Feature flag created: $FLAG_NAME"
+      echo "Now use: claude 'Implement $FEATURE feature behind $FLAG_NAME flag'"
+  
+  /review:
+    description: Request code review
+    script: |
+      echo "Requesting code review..."
+      git diff | claude reviewer
+  
+  /release:
+    description: Prepare release
+    parameters:
+      - name: version
+        description: Version number (e.g., 1.2.3)
+    script: |
+      echo "Preparing release $1..."
+      
+      # Update version
+      sed -i "s/version = .*/version = \"$1\"/" pyproject.toml
+      sed -i "s/\"version\": .*/\"version\": \"$1\",/" src/web/package.json
+      
+      # Generate changelog
+      git log --pretty=format:"- %s" $(git describe --tags --abbrev=0)..HEAD > CHANGELOG_TEMP.md
+      
+      # Create release commit
+      git add -A
+      git commit -m "chore: Release v$1"
+      git tag "v$1"
+      
+      echo "✅ Release v$1 prepared!"
+      echo "Push with: git push origin main --tags"
+  
+  # ADR Commands
+  /adr:
+    description: Create a new Architecture Decision Record
+    parameters:
+      - name: title
+        description: ADR title
+    script: |
+      TITLE="$1"
+      echo "📝 Creating ADR: $TITLE"
+      
+      claude adr-writer "Create ADR: $TITLE"
+      
+      # Create branch and PR
+      git checkout -b adr-$(date +%s)
+      git add docs/adr/
+      git commit -m "docs: Add ADR for $TITLE"
+      gh pr create --title "ADR: $TITLE" --body "New Architecture Decision Record"
+      
+      echo "✅ ADR created and PR opened"
+  
+  /adr-update:
+    description: Update existing ADR status
+    parameters:
+      - name: number
+        description: ADR number
+      - name: status
+        description: New status (accepted/deprecated/superseded)
+    script: |
+      claude adr-writer "Update ADR-$1 status to $2"
+      echo "✅ ADR-$1 updated to status: $2"
+  
+  /adr-list:
+    description: List all ADRs by status
+    parameters:
+      - name: status
+        description: Filter by status (optional)
+    script: |
+      STATUS="${1:-all}"
+      echo "📚 ADRs with status: $STATUS"
+      
+      if [ "$STATUS" = "all" ]; then
+        find docs/adr -name "*.md" -exec basename {} \; | sort
+      else
+        find docs/adr -name "*.md" -exec grep -l "Status: $STATUS" {} \; | xargs basename | sort
+      fi
+  
+  # Incident Response Commands
+  /incident:
+    description: Create incident and get immediate analysis
+    parameters:
+      - name: description
+        description: Incident description
+    script: |
+      DESC="$1"
+      echo "🚨 Creating incident: $DESC"
+      
+      # Get Claude's analysis
+      claude incident-responder "Analyze incident: $DESC"
+      
+      # Create GitHub issue
+      gh issue create \
+        --label "incident,p0" \
+        --title "INC: $DESC" \
+        --body "Incident analysis provided by Claude"
+      
+      echo "✅ Incident created with analysis"
+  
+  /rollback-prod:
+    description: Execute production rollback
+    script: |
+      echo "🔄 Executing production rollback..."
+      ./runbooks/rollback.sh production
+      claude incident-responder "Document rollback for production"
+      echo "✅ Rollback completed"
+  
+  /runbook:
+    description: Generate or update runbook
+    parameters:
+      - name: topic
+        description: Runbook topic
+    script: |
+      TOPIC="$1"
+      echo "📋 Creating runbook for: $TOPIC"
+      
+      claude incident-responder "Create comprehensive runbook for $TOPIC"
+      
+      echo "✅ Runbook saved to runbooks/$TOPIC.md"
+  
+  /investigate:
+    description: Investigate error or Sentry link
+    parameters:
+      - name: link
+        description: Sentry link or error description
+    script: |
+      echo "🔍 Investigating: $1"
+      
+      claude incident-responder "Investigate and provide timeline, root cause, and fixes for: $1"
+  
+  # Performance Commands
+  /perf-analyze:
+    description: Analyze performance metrics
+    parameters:
+      - name: url
+        description: URL to analyze
+    script: |
+      URL="$1"
+      echo "📊 Analyzing performance for: $URL"
+      
+      # Run Lighthouse
+      lighthouse "$URL" --output=json --output-path=lighthouse.json \
+        --only-categories=performance,accessibility
+      
+      # Analyze with Claude
+      cat lighthouse.json | claude performance-analyzer \
+        "Analyze this Lighthouse report and provide specific fixes for regressions"
+      
+      rm lighthouse.json
+  
+  /bundle-check:
+    description: Analyze bundle size and suggest optimizations
+    script: |
+      echo "📦 Analyzing bundle size..."
+      
+      # Build with stats
+      npm run build -- --stats > stats.json
+      
+      # Analyze with Claude
+      cat stats.json | claude performance-analyzer \
+        "Analyze bundle size and suggest tree-shaking opportunities"
+      
+      rm stats.json
+  
+  /query-optimize:
+    description: Optimize database queries
+    parameters:
+      - name: file
+        description: File containing queries
+    script: |
+      FILE="$1"
+      echo "🗄️ Optimizing queries in: $FILE"
+      
+      claude performance-analyzer \
+        "Analyze queries in $FILE, suggest indexes and optimizations"
+  
+  /web-vitals:
+    description: Compare web vitals with main branch
+    script: |
+      echo "📈 Comparing Web Vitals with main..."
+      
+      # Get current branch metrics
+      lighthouse http://localhost:3000 --output=json > current.json
+      
+      # Get main branch metrics (from stored baseline)
+      if [ -f ".lighthouse/baseline.json" ]; then
+        claude performance-analyzer \
+          "Compare web vitals between current.json and .lighthouse/baseline.json, provide delta report"
+      else
+        echo "No baseline found. Creating baseline..."
+        cp current.json .lighthouse/baseline.json
+      fi
+  
+  # Documentation Commands
+  /docs-sync:
+    description: Sync documentation with code changes
+    script: |
+      echo "📚 Syncing documentation with code..."
+      
+      # Get recent changes
+      git diff main...HEAD | claude adr-writer \
+        "Review these changes and update relevant documentation"
+      
+      git add docs/
+      git commit -m "docs: Sync documentation with latest changes"
+      
+      echo "✅ Documentation synchronized"
+  
+  /docs-freshness:
+    description: Check documentation freshness
+    script: |
+      echo "🔍 Checking documentation freshness..."
+      
+      # Find stale docs (not modified in 30+ days)
+      find docs -name "*.md" -mtime +30 > stale-docs.txt
+      
+      if [ -s stale-docs.txt ]; then
+        echo "⚠️ Stale documents found:"
+        cat stale-docs.txt
+        
+        # Ask Claude to review
+        cat stale-docs.txt | claude adr-writer \
+          "Review these potentially stale docs and suggest updates"
+      else
+        echo "✅ All documentation is fresh"
+      fi
+      
+      rm stale-docs.txt
+  
+  /docs-generate:
+    description: Generate missing documentation
+    script: |
+      echo "📝 Generating missing documentation..."
+      
+      # Find undocumented code
+      claude adr-writer "Scan codebase and generate documentation for:
+      1. Functions without docstrings
+      2. Complex algorithms without comments
+      3. API endpoints without descriptions
+      4. Configuration without explanations"
+      
+      echo "✅ Documentation generated"
+  
+  # Memory Management Commands (Claude Code Best Practices)
+  /memory:
+    description: Edit project memory files
+    script: |
+      echo "📝 Opening memory files for editing..."
+      
+      # Open CLAUDE.md in default editor
+      ${EDITOR:-vim} CLAUDE.md
+      
+      echo "✅ Memory files updated"
+  
+  /remember:
+    description: Quickly add a note to project memory
+    parameters:
+      - name: note
+        description: Note to remember
+    script: |
+      NOTE="$1"
+      TIMESTAMP=$(date +"%Y-%m-%d %H:%M")
+      
+      echo "📌 Adding to memory: $NOTE"
+      
+      # Add to PROJECT_STATE.md under context section
+      if grep -q "## Context for Next Session" .claude/PROJECT_STATE.md; then
+        echo "- 📌 [$TIMESTAMP] $NOTE" >> .claude/PROJECT_STATE.md
+      else
+        echo -e "\n## Context for Next Session\n- 📌 [$TIMESTAMP] $NOTE" >> .claude/PROJECT_STATE.md
+      fi
+      
+      echo "✅ Added to memory"
+  
+  /memory-review:
+    description: Review and clean project memory
+    script: |
+      echo "📋 Memory Review"
+      echo "==============="
+      
+      # Check file sizes
+      echo "📊 Memory File Sizes:"
+      echo "  CLAUDE.md: $(wc -l < CLAUDE.md) lines"
+      echo "  PROJECT_STATE.md: $(wc -l < .claude/PROJECT_STATE.md) lines"
+      
+      if [ -d ".claude/memory" ]; then
+        for file in .claude/memory/*.md; do
+          echo "  $(basename $file): $(wc -l < $file) lines"
+        done
+      fi
+      
+      # Check last updates
+      echo -e "\n📅 Last Updated:"
+      echo "  CLAUDE.md: $(stat -f %Sm -t "%Y-%m-%d %H:%M" CLAUDE.md 2>/dev/null || stat -c %y CLAUDE.md 2>/dev/null | cut -d' ' -f1-2)"
+      echo "  PROJECT_STATE.md: $(stat -f %Sm -t "%Y-%m-%d %H:%M" .claude/PROJECT_STATE.md 2>/dev/null || stat -c %y .claude/PROJECT_STATE.md 2>/dev/null | cut -d' ' -f1-2)"
+      
+      # Find stale items
+      echo -e "\n⚠️ Potentially Stale Items (>30 days):"
+      
+      # Check for old dates in PROJECT_STATE.md
+      if [ -f ".claude/PROJECT_STATE.md" ]; then
+        grep -E "202[0-9]-[0-9]{2}-[0-9]{2}" .claude/PROJECT_STATE.md | while read -r line; do
+          if [[ $line =~ (202[0-9]-[0-9]{2}-[0-9]{2}) ]]; then
+            date_str="${BASH_REMATCH[1]}"
+            # Calculate age in days
+            if command -v python3 &> /dev/null; then
+              age=$(python3 -c "from datetime import datetime; print((datetime.now() - datetime.strptime('$date_str', '%Y-%m-%d')).days)")
+              if [ "$age" -gt 30 ]; then
+                echo "  - $line (${age} days old)"
+              fi
+            fi
+          fi
+        done
+      fi
+      
+      # Check for duplicates
+      echo -e "\n🔍 Checking for duplicate entries..."
+      if [ -f ".claude/PROJECT_STATE.md" ]; then
+        duplicates=$(sort .claude/PROJECT_STATE.md | uniq -d | wc -l)
+        if [ "$duplicates" -gt 0 ]; then
+          echo "  Found $duplicates duplicate lines"
+        else
+          echo "  No duplicates found ✅"
+        fi
+      fi
+      
+      # Suggest actions
+      echo -e "\n💡 Suggested Actions:"
+      echo "  1. Run '/memory-clean' to remove old items"
+      echo "  2. Run '/memory-archive' to archive completed tasks"
+      echo "  3. Review and update CLAUDE.md if needed"
+  
+  /memory-clean:
+    description: Clean old items from memory
+    script: |
+      echo "🧹 Cleaning old memory items..."
+      
+      # Archive old completed tasks
+      if [ -f ".claude/PROJECT_STATE.md" ]; then
+        # Create archive if needed
+        mkdir -p .claude/archive
+        
+        # Archive items older than 30 days
+        python3 << 'EOF'
+import re
+from datetime import datetime, timedelta
+
+# Read current state
+with open('.claude/PROJECT_STATE.md', 'r') as f:
+    lines = f.readlines()
+
+# Separate old and current items
+current_lines = []
+archived_lines = []
+threshold = datetime.now() - timedelta(days=30)
+
+for line in lines:
+    date_match = re.search(r'(\d{4}-\d{2}-\d{2})', line)
+    if date_match:
+        date_str = date_match.group(1)
+        try:
+            line_date = datetime.strptime(date_str, '%Y-%m-%d')
+            if line_date < threshold and '✅' in line:
+                archived_lines.append(line)
+            else:
+                current_lines.append(line)
+        except:
+            current_lines.append(line)
+    else:
+        current_lines.append(line)
+
+# Write back current items
+with open('.claude/PROJECT_STATE.md', 'w') as f:
+    f.writelines(current_lines)
+
+# Append to archive
+if archived_lines:
+    archive_file = f'.claude/archive/archive_{datetime.now().strftime("%Y%m")}.md'
+    with open(archive_file, 'a') as f:
+        f.write(f'\n# Archived on {datetime.now().strftime("%Y-%m-%d")}\n')
+        f.writelines(archived_lines)
+    print(f"Archived {len(archived_lines)} old items to {archive_file}")
+else:
+    print("No old items to archive")
+EOF
+      fi
+      
+      echo "✅ Memory cleaned"
+  
+  /memory-add:
+    description: Add entry to specific memory section
+    parameters:
+      - name: section
+        description: Section name (setup/standards/patterns/team)
+      - name: entry
+        description: Entry to add
+    script: |
+      SECTION="$1"
+      ENTRY="$2"
+      
+      # Map section to file
+      case "$SECTION" in
+        setup)
+          FILE=".claude/memory/setup.md"
+          ;;
+        standards)
+          FILE=".claude/memory/standards.md"
+          ;;
+        patterns)
+          FILE=".claude/memory/patterns.md"
+          ;;
+        team)
+          FILE=".claude/memory/team.md"
+          ;;
+        *)
+          echo "❌ Unknown section: $SECTION"
+          echo "Valid sections: setup, standards, patterns, team"
+          exit 1
+          ;;
+      esac
+      
+      # Add entry
+      echo "- $ENTRY" >> "$FILE"
+      echo "✅ Added to $SECTION memory"
+  
+  /memory-search:
+    description: Search through all memory files
+    parameters:
+      - name: query
+        description: Search query
+    script: |
+      QUERY="$1"
+      
+      echo "🔍 Searching memory for: $QUERY"
+      echo "================================"
+      
+      # Search in all memory files
+      for file in CLAUDE.md .claude/PROJECT_STATE.md .claude/memory/*.md; do
+        if [ -f "$file" ]; then
+          matches=$(grep -i "$QUERY" "$file" 2>/dev/null | wc -l)
+          if [ "$matches" -gt 0 ]; then
+            echo -e "\n📄 $(basename $file) ($matches matches):"
+            grep -i --color=always "$QUERY" "$file" | head -5
+          fi
+        fi
+      done
+  
+  /memory-export:
+    description: Export memory to a single file
+    script: |
+      echo "📦 Exporting memory..."
+      
+      OUTPUT=".claude/memory-export-$(date +%Y%m%d-%H%M%S).md"
+      
+      # Resolve imports and create single file
+      python3 .claude/scripts/resolve_imports.py
+      
+      if [ -f ".claude/CLAUDE_RESOLVED.md" ]; then
+        cp .claude/CLAUDE_RESOLVED.md "$OUTPUT"
+        echo "✅ Memory exported to: $OUTPUT"
+      else
+        echo "❌ Export failed"
+      fi
+  
+  /memory-import:
+    description: Import memory from another project
+    parameters:
+      - name: path
+        description: Path to memory file or directory
+    script: |
+      SOURCE="$1"
+      
+      echo "📥 Importing memory from: $SOURCE"
+      
+      if [ -f "$SOURCE" ]; then
+        # Import single file
+        cp "$SOURCE" .claude/imported-memory.md
+        echo "✅ Imported to .claude/imported-memory.md"
+        echo "Review and merge with CLAUDE.md"
+      elif [ -d "$SOURCE" ]; then
+        # Import directory
+        cp -r "$SOURCE"/.claude/memory/* .claude/memory/ 2>/dev/null || true
+        echo "✅ Imported memory files"
+      else
+        echo "❌ Source not found: $SOURCE"
+      fi

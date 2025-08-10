@@ -1,0 +1,176 @@
+#!/bin/bash
+# System health check and diagnostics
+
+echo "🏥 Running system diagnostics..."
+echo ""
+
+# Check Claude Code installation
+echo "Claude Code:"
+if command -v claude &> /dev/null; then
+  echo "  ✅ Installed"
+  claude --version 2>/dev/null || echo "  Version: Unknown"
+else
+  echo "  ❌ Not installed"
+  echo "     Install: curl -fsSL https://claude.ai/install.sh | sh"
+fi
+
+# Check API keys
+echo ""
+echo "API Keys:"
+if [ -n "$ANTHROPIC_API_KEY" ]; then
+  echo "  ✅ ANTHROPIC_API_KEY configured"
+else
+  echo "  ❌ ANTHROPIC_API_KEY missing"
+fi
+
+if [ -n "$GITHUB_TOKEN" ]; then
+  echo "  ✅ GITHUB_TOKEN configured"
+else
+  echo "  ⚠️  GITHUB_TOKEN missing (optional)"
+fi
+
+# Check dependencies
+echo ""
+echo "Dependencies:"
+
+# Python
+if command -v python3 &> /dev/null; then
+  echo "  ✅ Python $(python3 --version 2>&1 | cut -d' ' -f2)"
+  
+  # Check virtual environment
+  if [ -d "venv" ]; then
+    echo "     ✅ Virtual environment exists"
+  else
+    echo "     ⚠️  No virtual environment"
+  fi
+  
+  # Check required packages
+  if [ -f "requirements.txt" ]; then
+    source venv/bin/activate 2>/dev/null || true
+    MISSING_DEPS=0
+    while read -r dep; do
+      PKG=$(echo "$dep" | cut -d'=' -f1 | cut -d'>' -f1 | cut -d'<' -f1)
+      python3 -c "import $PKG" 2>/dev/null || {
+        echo "     ❌ Missing: $PKG"
+        MISSING_DEPS=1
+      }
+    done < <(grep -v '^#' requirements.txt | grep -v '^$')
+    
+    if [ $MISSING_DEPS -eq 0 ]; then
+      echo "     ✅ All Python packages installed"
+    fi
+  fi
+else
+  echo "  ❌ Python not installed"
+fi
+
+# Node.js
+if command -v node &> /dev/null; then
+  echo "  ✅ Node.js $(node --version)"
+  
+  if [ -f "src/web/package.json" ] && [ -d "src/web/node_modules" ]; then
+    echo "     ✅ npm packages installed"
+  elif [ -f "src/web/package.json" ]; then
+    echo "     ❌ npm packages not installed"
+    echo "        Run: cd src/web && npm install"
+  fi
+else
+  echo "  ⚠️  Node.js not installed (needed for frontend)"
+fi
+
+# Docker
+if command -v docker &> /dev/null; then
+  echo "  ✅ Docker $(docker --version | cut -d' ' -f3 | cut -d',' -f1)"
+else
+  echo "  ⚠️  Docker not installed (optional)"
+fi
+
+# Check project files
+echo ""
+echo "Project Files:"
+
+FILES=(
+  "CLAUDE.md"
+  ".claude/agents"
+  ".claude/hooks"
+  ".claude/mcp.json"
+  ".github/workflows/claude.yml"
+  "Makefile"
+)
+
+for FILE in "${FILES[@]}"; do
+  if [ -e "$FILE" ]; then
+    echo "  ✅ $FILE"
+  else
+    echo "  ❌ $FILE missing"
+  fi
+done
+
+# Check services
+echo ""
+echo "Services:"
+
+# Database
+if [ -n "$DATABASE_URL" ]; then
+  echo "  ✅ Database configured"
+  # Try to connect
+  python3 -c "
+import os
+from sqlalchemy import create_engine
+try:
+    engine = create_engine(os.environ['DATABASE_URL'])
+    engine.connect()
+    print('     ✅ Database connection successful')
+except:
+    print('     ❌ Database connection failed')
+" 2>/dev/null || echo "     ⚠️  Cannot test connection"
+else
+  echo "  ⚠️  DATABASE_URL not configured"
+fi
+
+# Redis
+if [ -n "$REDIS_URL" ]; then
+  echo "  ✅ Redis configured"
+else
+  echo "  ⚠️  REDIS_URL not configured (optional)"
+fi
+
+# Git repository
+echo ""
+echo "Git Repository:"
+if [ -d ".git" ]; then
+  echo "  ✅ Git initialized"
+  
+  # Check remote
+  if git remote -v | grep -q origin; then
+    echo "  ✅ Remote configured"
+  else
+    echo "  ⚠️  No remote configured"
+  fi
+  
+  # Check for uncommitted changes
+  if [ -n "$(git status --porcelain)" ]; then
+    echo "  ⚠️  Uncommitted changes"
+  else
+    echo "  ✅ Working directory clean"
+  fi
+else
+  echo "  ❌ Not a git repository"
+fi
+
+# Summary
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "Diagnostics complete!"
+
+# Count issues
+CRITICAL=$(grep -c "❌" <<< "$OUTPUT" 2>/dev/null || echo 0)
+WARNINGS=$(grep -c "⚠️" <<< "$OUTPUT" 2>/dev/null || echo 0)
+
+if [ "$CRITICAL" -gt 0 ]; then
+  echo "Found critical issues that need fixing"
+elif [ "$WARNINGS" -gt 0 ]; then
+  echo "System operational with minor issues"
+else
+  echo "✅ System healthy!"
+fi

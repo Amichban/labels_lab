@@ -1,0 +1,394 @@
+name: Infrastructure as Code - Plan and Apply
+
+on:
+  pull_request:
+    paths:
+      - 'terraform/**'
+      - 'infrastructure/**'
+      - 'infra/**'
+      - '*.tf'
+      - '*.tfvars'
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to perform'
+        required: true
+        type: choice
+        options:
+          - plan
+          - apply
+      environment:
+        description: 'Environment'
+        required: true
+        type: choice
+        options:
+          - dev
+          - staging
+          - production
+
+permissions:
+  id-token: write  # For OIDC
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  terraform-plan:
+    name: Terraform Plan
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude infra'))
+    
+    outputs:
+      plan-summary: ${{ steps.plan.outputs.summary }}
+      risk-level: ${{ steps.risk.outputs.level }}
+      
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+          
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.0
+          
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          
+      - name: Install tools
+        run: |
+          # Security scanning tools
+          pip install checkov
+          
+          # Cost estimation
+          curl -fsSL https://raw.githubusercontent.com/infracost/infracost/master/scripts/install.sh | sh
+          
+          # Linting
+          curl -s https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh | bash
+          
+      - name: Terraform Init
+        id: init
+        run: |
+          cd terraform/${{ github.event.inputs.environment || 'dev' }}
+          terraform init
+          
+      - name: Terraform Validate
+        id: validate
+        run: |
+          cd terraform/${{ github.event.inputs.environment || 'dev' }}
+          terraform validate
+          
+      - name: Terraform Format Check
+        id: fmt
+        run: |
+          cd terraform/${{ github.event.inputs.environment || 'dev' }}
+          terraform fmt -check -recursive
+          
+      - name: TFLint
+        id: tflint
+        run: |
+          cd terraform/${{ github.event.inputs.environment || 'dev' }}
+          tflint --init
+          tflint
+          
+      - name: Security Scan with Checkov
+        id: checkov
+        run: |
+          cd terraform/${{ github.event.inputs.environment || 'dev' }}
+          checkov -d . --output json > checkov-results.json || true
+          
+      - name: Terraform Plan
+        id: plan
+        run: |
+          cd terraform/${{ github.event.inputs.environment || 'dev' }}
+          
+          # Generate plan
+          terraform plan -input=false -out=tfplan.binary
+          
+          # Convert to JSON for analysis
+          terraform show -json tfplan.binary > tfplan.json
+          
+          # Generate human-readable summary
+          terraform show tfplan.binary > plan-summary.txt
+          
+          # Extract summary for output
+          echo "summary<<EOF" >> $GITHUB_OUTPUT
+          cat plan-summary.txt >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          
+      - name: Risk Assessment
+        id: risk
+        run: |
+          cd terraform/${{ github.event.inputs.environment || 'dev' }}
+          
+          # Analyze plan for risks
+          python3 << 'EOF'
+          import json
+          
+          with open('tfplan.json', 'r') as f:
+              plan = json.load(f)
+          
+          risk_level = "LOW"
+          risks = []
+          
+          # Check for deletions
+          deletions = [r for r in plan.get('resource_changes', []) 
+                      if r['change']['actions'] == ['delete']]
+          if deletions:
+              risk_level = "HIGH"
+              risks.append(f"⚠️ {len(deletions)} resources will be DELETED")
+          
+          # Check for replacements
+          replacements = [r for r in plan.get('resource_changes', [])
+                         if 'delete' in r['change']['actions'] and 'create' in r['change']['actions']]
+          if replacements:
+              risk_level = "HIGH"
+              risks.append(f"⚠️ {len(replacements)} resources will be REPLACED")
+          
+          # Check for database changes
+          db_changes = [r for r in plan.get('resource_changes', [])
+                       if 'rds' in r['type'] or 'database' in r['type']]
+          if db_changes:
+              if risk_level != "HIGH":
+                  risk_level = "MEDIUM"
+              risks.append(f"📊 {len(db_changes)} database resources affected")
+          
+          # Check for network changes
+          network_changes = [r for r in plan.get('resource_changes', [])
+                           if any(x in r['type'] for x in ['vpc', 'subnet', 'security_group', 'nacl'])]
+          if network_changes:
+              if risk_level == "LOW":
+                  risk_level = "MEDIUM"
+              risks.append(f"🌐 {len(network_changes)} network resources affected")
+          
+          print(f"RISK_LEVEL={risk_level}")
+          print(f"RISKS={'|'.join(risks)}")
+          EOF
+          
+          # Set outputs
+          echo "level=${RISK_LEVEL}" >> $GITHUB_OUTPUT
+          echo "details=${RISKS}" >> $GITHUB_OUTPUT
+          
+      - name: Cost Estimation
+        id: cost
+        run: |
+          cd terraform/${{ github.event.inputs.environment || 'dev' }}
+          
+          # Generate cost breakdown
+          infracost breakdown --path . --format json --out-file cost.json
+          infracost breakdown --path . --format table > cost-estimate.txt
+          
+          # Generate cost diff if this is a PR
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            infracost diff --path . --format md > cost-diff.md
+          fi
+          
+      - name: Create PR Comment
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            
+            // Read plan summary
+            const planSummary = fs.readFileSync('terraform/${{ github.event.inputs.environment || 'dev' }}/plan-summary.txt', 'utf8');
+            const costEstimate = fs.readFileSync('terraform/${{ github.event.inputs.environment || 'dev' }}/cost-estimate.txt', 'utf8');
+            
+            // Parse risk assessment
+            const riskLevel = '${{ steps.risk.outputs.level }}';
+            const riskDetails = '${{ steps.risk.outputs.details }}'.split('|').join('\n');
+            
+            const body = `## 🏗️ Terraform Plan Results
+            
+            ### Risk Assessment: ${riskLevel}
+            ${riskDetails}
+            
+            ### Plan Summary
+            <details>
+            <summary>Click to expand</summary>
+            
+            \`\`\`
+            ${planSummary.substring(0, 3000)}
+            \`\`\`
+            </details>
+            
+            ### Cost Estimate
+            <details>
+            <summary>Click to expand</summary>
+            
+            \`\`\`
+            ${costEstimate}
+            \`\`\`
+            </details>
+            
+            ### Validation Results
+            - ✅ Terraform Format: ${{ steps.fmt.outcome }}
+            - ✅ Terraform Validate: ${{ steps.validate.outcome }}
+            - ✅ TFLint: ${{ steps.tflint.outcome }}
+            - ✅ Security Scan: ${{ steps.checkov.outcome }}
+            
+            ### Required Approvals
+            ${riskLevel === 'HIGH' ? '- ⚠️ **HIGH RISK: Requires 2 approvals**' : ''}
+            ${riskLevel === 'MEDIUM' ? '- ⚠️ **MEDIUM RISK: Requires 1 approval**' : ''}
+            ${riskLevel === 'LOW' ? '- ✅ **LOW RISK: Standard approval process**' : ''}
+            
+            ### Next Steps
+            1. Review the plan output above
+            2. Get required approvals
+            3. Merge PR to trigger apply workflow
+            
+            ---
+            *Generated by Infrastructure PR Agent*`;
+            
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: body
+            });
+
+  terraform-apply:
+    name: Terraform Apply
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    
+    environment:
+      name: ${{ matrix.environment }}
+      url: ${{ steps.deploy.outputs.url }}
+      
+    strategy:
+      matrix:
+        environment: [staging, production]
+        
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+          
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.0
+          
+      - name: Terraform Init
+        run: |
+          cd terraform/${{ matrix.environment }}
+          terraform init
+          
+      - name: Download Plan
+        if: matrix.environment == 'production'
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-${{ matrix.environment }}
+          path: terraform/${{ matrix.environment }}
+          
+      - name: Terraform Apply
+        id: apply
+        run: |
+          cd terraform/${{ matrix.environment }}
+          
+          if [ "${{ matrix.environment }}" == "production" ]; then
+            # Production uses saved plan
+            terraform apply -input=false tfplan.binary
+          else
+            # Staging can auto-approve low-risk changes
+            terraform apply -input=false -auto-approve
+          fi
+          
+      - name: Notify Success
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `✅ Infrastructure successfully deployed to **${{ matrix.environment }}**`
+            });
+            
+      - name: Notify Failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `❌ Infrastructure deployment to **${{ matrix.environment }}** failed! Check logs for details.`
+            });
+
+  claude-infra-request:
+    name: Claude Infrastructure Change Request
+    runs-on: ubuntu-latest
+    if: github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude infra')
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Process Infrastructure Request
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          REQUEST="${{ github.event.comment.body }}"
+          REQUEST=${REQUEST//@claude infra/}
+          
+          # Use infra-pr agent to handle request
+          claude infra-pr "$REQUEST"
+          
+      - name: Create PR with Changes
+        uses: peter-evans/create-pull-request@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "feat(infra): $REQUEST"
+          title: "🏗️ Infrastructure: $REQUEST"
+          body: |
+            ## Infrastructure Change Request
+            
+            ### Request
+            ${{ github.event.comment.body }}
+            
+            ### Changes Made
+            - Modified Terraform configuration
+            - Generated plan (see PR checks)
+            - Risk assessment completed
+            
+            ### Review Required
+            Please review the Terraform plan output in the PR checks.
+            
+            **This PR only contains the plan. Merge to apply.**
+            
+            /cc @${{ github.event.comment.user.login }}
+          branch: infra/${{ github.run_number }}
+          
+# Protected environments configuration
+# Set up in GitHub Settings > Environments:
+#
+# Development:
+#   - No protection rules
+#   - Auto-deploy on merge
+#
+# Staging:
+#   - Required reviewers: 1
+#   - Auto-deploy after approval
+#
+# Production:
+#   - Required reviewers: 2
+#   - Manual approval required
+#   - Restricted to main branch
+#   - Environment secrets:
+#     - AWS_ROLE_ARN (production role)
+#     - SLACK_WEBHOOK (for notifications)

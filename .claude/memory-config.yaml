@@ -1,0 +1,280 @@
+# Claude Memory Configuration
+# Controls how context and memory are managed across sessions
+
+memory:
+  # Persistent files that Claude always reads
+  persistent_context:
+    - path: "CLAUDE.md"
+      priority: 1
+      description: "Core project instructions and patterns"
+    
+    - path: ".claude/PROJECT_STATE.md"
+      priority: 2
+      description: "Current tasks and work state"
+    
+    - path: "docs/VOLUMETRICS.md"
+      priority: 3
+      description: "Data metrics for decision making"
+      when: "working_on_database or migrations"
+    
+    - path: "docs/adr/*.md"
+      priority: 4
+      description: "Architecture decisions"
+      filter: "status:accepted"
+  
+  # Dynamic context based on current work
+  dynamic_context:
+    - trigger: "working_on_api"
+      include:
+        - "docs/api/openapi.yaml"
+        - "services/api/schemas/**"
+        - "Recent API changes from git"
+    
+    - trigger: "working_on_tests"
+      include:
+        - "coverage.xml"
+        - "Recent test failures"
+        - ".claude/test-patterns.md"
+    
+    - trigger: "debugging"
+      include:
+        - "logs/error.log"
+        - "Recent stack traces"
+        - "sentry issues"
+  
+  # Context limits and management
+  limits:
+    max_tokens: 100000           # Maximum context size
+    summarize_after: 50000        # Start summarizing at this size
+    prune_after_days: 7           # Remove old completed tasks
+    cache_duration_hours: 1       # Cache frequently used context
+  
+  # Auto-update triggers
+  auto_update:
+    on_file_save:
+      - update: "PROJECT_STATE.md"
+        with: "file path and change type"
+    
+    on_test_run:
+      - update: "PROJECT_STATE.md"
+        with: "test results summary"
+    
+    on_commit:
+      - update: "PROJECT_STATE.md"
+        with: "commit message"
+      - update: "git_context"
+        with: "recent commits"
+    
+    on_deployment:
+      - update: "CLAUDE.md"
+        with: "deployment notes"
+    
+    on_error:
+      - update: "context_cache"
+        with: "error details and stack trace"
+
+# Context filtering rules
+filtering:
+  # Exclude from context unless specifically needed
+  exclude_patterns:
+    - "**/*.test.{js,ts,py}"     # Test files
+    - "**/node_modules/**"        # Dependencies
+    - "**/__pycache__/**"         # Python cache
+    - "**/build/**"               # Build artifacts
+    - "**/dist/**"                # Distribution files
+    - "**/.git/**"                # Git internals
+    - "**/*.log"                  # Log files (unless debugging)
+    - "**/*.min.js"               # Minified files
+    - "**/coverage/**"            # Coverage reports
+  
+  # Always include in context
+  include_patterns:
+    - "**/*.md"                   # Documentation
+    - "**/migrations/*.sql"       # Database migrations
+    - "**/.env.example"           # Environment examples
+    - "**/config/*.yaml"          # Configuration files
+  
+  # Smart inclusion based on work
+  conditional_includes:
+    - pattern: "**/*.test.{js,ts,py}"
+      when: "writing_tests or fixing_tests"
+    
+    - pattern: "logs/*.log"
+      when: "debugging or investigating_issue"
+      max_lines: 500
+    
+    - pattern: "node_modules/**/package.json"
+      when: "checking_dependencies"
+      
+    - pattern: "coverage/**"
+      when: "improving_test_coverage"
+
+# Session management
+session:
+  # Session persistence
+  persistence:
+    enabled: true
+    location: ".claude/sessions/"
+    max_sessions: 10
+    
+  # Session lifecycle hooks
+  hooks:
+    on_start:
+      - run: "python .claude/hooks/update_context.py session_summary"
+      - load: "recent_git_commits"
+      - check: "blocked_items"
+    
+    on_task_complete:
+      - run: "python .claude/hooks/update_context.py task_completed --details '{task}'"
+      - update: "PROJECT_STATE.md"
+    
+    on_file_write:
+      - run: "python .claude/hooks/update_context.py file_changed --details '{file}'"
+      - cache: "file_context"
+    
+    on_end:
+      - run: "python .claude/hooks/update_context.py session_summary"
+      - save: "session_context"
+      - prune: "old_context"
+  
+  # Breadcrumbs for context continuity
+  breadcrumbs:
+    enabled: true
+    location: ".claude/breadcrumbs.jsonl"
+    max_entries: 1000
+    
+    track:
+      - decisions
+      - blockers
+      - important_files
+      - failed_attempts
+      - successful_patterns
+
+# Semantic markers for importance
+semantic_markers:
+  critical: "🚨"      # Must remember
+  warning: "⚠️"       # Important caveat
+  tip: "💡"           # Helpful pattern
+  remember: "📌"      # For next session
+  security: "🔒"      # Security critical
+  deprecated: "🗑️"    # No longer valid
+  decision: "✅"      # Architectural decision
+  blocked: "🚫"       # Blocking issue
+
+# Memory optimization strategies
+optimization:
+  # Summarization rules
+  summarization:
+    strategy: "hierarchical"     # or "temporal" or "importance"
+    
+    preserve_always:
+      - current_task
+      - blockers
+      - recent_decisions
+      - security_notes
+      - api_contracts
+    
+    summarize_aggressively:
+      - completed_tasks_older_than_7d
+      - resolved_issues
+      - old_test_results
+      - superseded_decisions
+  
+  # Compression techniques
+  compression:
+    enabled: true
+    
+    techniques:
+      - name: "deduplication"
+        description: "Remove duplicate information"
+        
+      - name: "abstraction"
+        description: "Replace specifics with patterns"
+        
+      - name: "consolidation"
+        description: "Merge related items"
+  
+  # Caching strategy
+  caching:
+    enabled: true
+    location: ".claude/context_cache/"
+    
+    cache_items:
+      - key: "api_patterns"
+        ttl: 3600
+        
+      - key: "test_patterns"
+        ttl: 3600
+        
+      - key: "common_errors"
+        ttl: 7200
+        
+      - key: "project_structure"
+        ttl: 86400
+
+# Context quality metrics
+metrics:
+  track:
+    - relevance_score       # How often context is used
+    - miss_rate            # Times needed info wasn't available
+    - overhead_ratio       # Context tokens vs work tokens
+    - staleness_score      # Age of context items
+  
+  alerts:
+    - condition: "staleness_score > 0.7"
+      action: "prompt_context_refresh"
+      
+    - condition: "overhead_ratio > 0.5"
+      action: "trigger_summarization"
+      
+    - condition: "miss_rate > 0.2"
+      action: "expand_context_inclusion"
+
+# Integration with other tools
+integrations:
+  git:
+    include_recent_commits: 20
+    include_branch_info: true
+    track_file_changes: true
+    
+  github:
+    include_open_prs: true
+    include_recent_issues: 5
+    track_pr_comments: true
+    
+  testing:
+    include_coverage: true
+    track_flaky_tests: true
+    include_recent_failures: true
+    
+  monitoring:
+    include_recent_errors: true
+    include_performance_metrics: true
+    track_deployments: true
+
+# Privacy and security
+privacy:
+  # Never include in context
+  never_store:
+    - "*.key"
+    - "*.pem"
+    - "*.cert"
+    - ".env"
+    - "secrets.yaml"
+    - "**/passwords.txt"
+  
+  # Redact sensitive information
+  redaction:
+    enabled: true
+    patterns:
+      - regex: '\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+        replace: "[EMAIL]"
+      
+      - regex: '\b(?:\d{4}[-\s]?){3}\d{4}\b'
+        replace: "[CARD_NUMBER]"
+      
+      - regex: 'api[_-]?key["\s:=]+["\']\K[^"\']+' 
+        replace: "[API_KEY]"
+      
+      - regex: 'password["\s:=]+["\']\K[^"\']+'
+        replace: "[PASSWORD]"

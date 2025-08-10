@@ -1,0 +1,383 @@
+name: Intelligent CI with Claude
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  checks: write
+  actions: read
+
+jobs:
+  # Main CI pipeline that fails fast
+  fast-ci:
+    name: Fast CI Pipeline
+    runs-on: ubuntu-latest
+    outputs:
+      build_status: ${{ steps.build.outcome }}
+      test_status: ${{ steps.test.outcome }}
+      lint_status: ${{ steps.lint.outcome }}
+      error_summary: ${{ steps.summarize.outputs.errors }}
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      
+      # STEP 1: Lint (fastest, fail early)
+      - name: Lint
+        id: lint
+        run: |
+          npm run lint 2>&1 | tee lint.log || echo "::set-output name=failed::true"
+        continue-on-error: true
+      
+      # STEP 2: Type Check (fast, catch type errors)
+      - name: Type Check
+        id: typecheck
+        if: steps.lint.outcome == 'success'
+        run: |
+          npm run typecheck 2>&1 | tee typecheck.log || echo "::set-output name=failed::true"
+        continue-on-error: true
+      
+      # STEP 3: Build (medium speed)
+      - name: Build
+        id: build
+        if: steps.typecheck.outcome == 'success'
+        run: |
+          npm run build 2>&1 | tee build.log || echo "::set-output name=failed::true"
+        continue-on-error: true
+      
+      # STEP 4: Test (slowest, run last)
+      - name: Test
+        id: test
+        if: steps.build.outcome == 'success'
+        run: |
+          npm test -- --json --outputFile=test-results.json 2>&1 | tee test.log || echo "::set-output name=failed::true"
+        continue-on-error: true
+      
+      # Summarize errors for Claude
+      - name: Summarize Errors
+        id: summarize
+        if: failure() || steps.lint.outputs.failed || steps.typecheck.outputs.failed || steps.build.outputs.failed || steps.test.outputs.failed
+        run: |
+          ERROR_SUMMARY=""
+          
+          if [ -f "lint.log" ] && grep -q "error" lint.log; then
+            ERROR_SUMMARY="$ERROR_SUMMARY\n## Lint Errors\n\`\`\`\n$(tail -20 lint.log)\n\`\`\`"
+          fi
+          
+          if [ -f "typecheck.log" ] && grep -q "error" typecheck.log; then
+            ERROR_SUMMARY="$ERROR_SUMMARY\n## Type Errors\n\`\`\`\n$(tail -20 typecheck.log)\n\`\`\`"
+          fi
+          
+          if [ -f "build.log" ] && grep -q "error" build.log; then
+            ERROR_SUMMARY="$ERROR_SUMMARY\n## Build Errors\n\`\`\`\n$(tail -20 build.log)\n\`\`\`"
+          fi
+          
+          if [ -f "test.log" ] && grep -q "FAIL" test.log; then
+            ERROR_SUMMARY="$ERROR_SUMMARY\n## Test Failures\n\`\`\`\n$(grep -A 5 "FAIL" test.log)\n\`\`\`"
+          fi
+          
+          echo "errors<<EOF" >> $GITHUB_OUTPUT
+          echo "$ERROR_SUMMARY" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+      
+      # Post initial failure comment
+      - name: Post Failure Comment
+        if: failure() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const summary = `## ❌ CI Failed
+            
+            ${{ steps.summarize.outputs.errors }}
+            
+            ### 🤖 Need help?
+            Comment \`@claude fix\` to auto-fix these errors
+            Or ask: \`@claude explain the TypeError\`
+            
+            ### Quick Actions
+            - \`@claude fix all\` - Fix all auto-fixable errors
+            - \`@claude fix lint\` - Fix linting issues only
+            - \`@claude fix tests\` - Fix test failures
+            - \`@claude explain\` - Get detailed explanation
+            `;
+            
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: summary
+            });
+
+  # Claude teacher triggered by comments
+  claude-teacher:
+    name: Claude CI Teacher
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'issue_comment' && 
+      contains(github.event.comment.body, '@claude')
+    
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Parse Claude Command
+        id: parse
+        run: |
+          COMMENT="${{ github.event.comment.body }}"
+          
+          # Extract command after @claude
+          COMMAND=$(echo "$COMMENT" | grep -oP '@claude \K[^.!?]*' | head -1)
+          echo "command=$COMMAND" >> $GITHUB_OUTPUT
+          
+          # Determine action type
+          if echo "$COMMAND" | grep -qi "fix"; then
+            echo "action=fix" >> $GITHUB_OUTPUT
+          elif echo "$COMMAND" | grep -qi "explain"; then
+            echo "action=explain" >> $GITHUB_OUTPUT
+          elif echo "$COMMAND" | grep -qi "teach"; then
+            echo "action=teach" >> $GITHUB_OUTPUT
+          else
+            echo "action=help" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Get Recent CI Logs
+        id: logs
+        run: |
+          # Get the most recent failed workflow run
+          PR_NUMBER=$(echo "${{ github.event.issue.number }}")
+          
+          # Get failed run logs
+          gh run list \
+            --workflow=intelligent-ci.yml \
+            --branch="pull/$PR_NUMBER" \
+            --status=failure \
+            --limit=1 \
+            --json databaseId \
+            --jq '.[0].databaseId' | \
+          xargs -I {} gh run view {} --log-failed > ci-failures.log || true
+          
+          # Also get structured test results if available
+          if [ -f "test-results.json" ]; then
+            cat test-results.json > test-results.log
+          fi
+      
+      - name: Analyze with Claude
+        id: analyze
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          # Prepare context
+          CONTEXT="CI Failure Logs:\n$(cat ci-failures.log | tail -500)"
+          
+          # Use appropriate Claude command based on action
+          case "${{ steps.parse.outputs.action }}" in
+            fix)
+              echo "$CONTEXT" | claude ci-teacher \
+                "Analyze these CI failures and generate fixes. 
+                Command: ${{ steps.parse.outputs.command }}
+                Output format: JSON with fix patches" \
+                --output-format json \
+                --max-turns 3 \
+                --timeout 120 > analysis.json
+              ;;
+            explain)
+              echo "$CONTEXT" | claude ci-teacher \
+                "Explain these CI failures in detail with root causes.
+                Command: ${{ steps.parse.outputs.command }}
+                Include learning points and prevention tips" \
+                --output-format markdown > explanation.md
+              ;;
+            teach)
+              echo "$CONTEXT" | claude ci-teacher \
+                "Provide educational content about these failures.
+                Include best practices, patterns, and resources" \
+                --output-format markdown > lesson.md
+              ;;
+            *)
+              echo "Available commands: fix, explain, teach" > help.md
+              ;;
+          esac
+      
+      - name: Apply Fixes
+        if: steps.parse.outputs.action == 'fix'
+        id: apply
+        run: |
+          # Check if we have auto-fixable issues
+          AUTO_FIXABLE=$(jq -r '.fix.auto_fixable' analysis.json)
+          
+          if [ "$AUTO_FIXABLE" = "true" ]; then
+            # Extract patches and apply
+            jq -r '.fix.patches[]' analysis.json | while read -r patch; do
+              echo "$patch" | base64 -d | git apply --3way || true
+            done
+            
+            # Run quick validation
+            npm run lint --fix || true
+            npm run format || true
+            
+            # Commit if changes
+            if [ -n "$(git status --porcelain)" ]; then
+              git config --global user.name "Claude CI Teacher"
+              git config --global user.email "claude-ci@example.com"
+              git add -A
+              git commit -m "fix: Auto-fix CI failures
+              
+              Applied fixes for:
+              $(jq -r '.fix.description' analysis.json)
+              
+              Co-authored-by: Claude <noreply@anthropic.com>"
+              git push
+              
+              echo "fixes_applied=true" >> $GITHUB_OUTPUT
+            fi
+          fi
+      
+      - name: Post Response
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let response = '';
+            
+            const action = '${{ steps.parse.outputs.action }}';
+            
+            if (action === 'fix') {
+              const analysis = JSON.parse(fs.readFileSync('analysis.json', 'utf8'));
+              const applied = '${{ steps.apply.outputs.fixes_applied }}' === 'true';
+              
+              response = `## 🔧 CI Fix Analysis\n\n`;
+              
+              if (applied) {
+                response += `✅ **Auto-fixes applied and pushed!**\n\n`;
+                response += `### What was fixed:\n`;
+                response += analysis.fix.description + '\n\n';
+                response += `### Changes made:\n`;
+                analysis.fix.patches.forEach(p => {
+                  response += `- ${p.file}: ${p.description}\n`;
+                });
+              } else {
+                response += `⚠️ **Manual fixes required**\n\n`;
+                response += `### Issues found:\n`;
+                response += analysis.fix.description + '\n\n';
+                response += `### Suggested fixes:\n`;
+                response += '```diff\n' + analysis.fix.manual_patch + '\n```\n';
+              }
+              
+              response += `\n### 📚 Learning Points:\n`;
+              response += analysis.education.explanation + '\n';
+              response += `\n**Best Practice**: ${analysis.education.best_practice}\n`;
+              
+            } else if (action === 'explain') {
+              response = fs.readFileSync('explanation.md', 'utf8');
+            } else if (action === 'teach') {
+              response = fs.readFileSync('lesson.md', 'utf8');
+            } else {
+              response = fs.readFileSync('help.md', 'utf8');
+            }
+            
+            // Add cost info
+            response += `\n\n---\n`;
+            response += `*Claude CI Teacher • Action: ${action} • `;
+            response += `Tokens: ~${Math.floor(response.length/4)} • `;
+            response += `Est. cost: $${(response.length/4 * 0.000003).toFixed(4)}*`;
+            
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: response
+            });
+
+  # Generate CI learning report
+  ci-learning-report:
+    name: CI Learning Report
+    runs-on: ubuntu-latest
+    if: failure() && github.event_name == 'pull_request'
+    needs: fast-ci
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Generate Learning Report
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          # Collect all errors
+          cat << EOF > errors.json
+          {
+            "build_status": "${{ needs.fast-ci.outputs.build_status }}",
+            "test_status": "${{ needs.fast-ci.outputs.test_status }}",
+            "lint_status": "${{ needs.fast-ci.outputs.lint_status }}",
+            "errors": "${{ needs.fast-ci.outputs.error_summary }}"
+          }
+          EOF
+          
+          # Generate structured learning report
+          cat errors.json | claude ci-teacher \
+            "Generate a learning report from these CI failures.
+            Include:
+            1. Root cause analysis
+            2. Category classification
+            3. Prevention tips
+            4. Related documentation
+            Output as structured JSON" \
+            --output-format json \
+            --max-tokens 2000 > learning-report.json
+      
+      - name: Update PR Status
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = JSON.parse(fs.readFileSync('learning-report.json', 'utf8'));
+            
+            // Create check with learning summary
+            await github.rest.checks.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              name: 'CI Learning Report',
+              head_sha: context.sha,
+              status: 'completed',
+              conclusion: 'neutral',
+              output: {
+                title: '📚 Learning Opportunity Detected',
+                summary: report.summary,
+                text: `
+                  ## Root Causes
+                  ${report.root_causes.map(rc => `- ${rc}`).join('\n')}
+                  
+                  ## Prevention Tips
+                  ${report.prevention_tips.map(tip => `- ${tip}`).join('\n')}
+                  
+                  ## Recommended Reading
+                  ${report.resources.map(r => `- [${r.title}](${r.url})`).join('\n')}
+                  
+                  ## Auto-Fix Available?
+                  ${report.auto_fixable ? '✅ Yes - Comment `@claude fix all`' : '❌ No - Manual fix required'}
+                `
+              }
+            });
+
+# Cost control configuration
+# Defined in .github/claude-config.yml
+# ci_teacher:
+#   max_turns: 3
+#   timeout: 120
+#   max_tokens: 4000
+#   rate_limits:
+#     per_hour: 10
+#     per_day: 50
+#     per_pr: 5

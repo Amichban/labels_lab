@@ -1,0 +1,485 @@
+name: API Contract Validation & Generation
+
+on:
+  pull_request:
+    paths:
+      - 'docs/api/openapi.yaml'
+      - 'docs/PRD.md'
+      - 'services/api/**'
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to perform'
+        required: true
+        default: 'validate'
+        type: choice
+        options:
+          - validate
+          - generate-all
+          - generate-sdk
+          - generate-docs
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  validate-api-spec:
+    name: Validate OpenAPI Specification
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || github.event.inputs.action == 'validate'
+    
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2  # Need previous version for comparison
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
+      - name: Install validation tools
+        run: |
+          npm install -g @apidevtools/swagger-cli
+          npm install -g oasdiff
+          npm install -g @redocly/cli
+      
+      - name: Validate OpenAPI spec
+        run: |
+          if [ -f "docs/api/openapi.yaml" ]; then
+            swagger-cli validate docs/api/openapi.yaml
+            redocly lint docs/api/openapi.yaml
+          else
+            echo "⚠️ No OpenAPI spec found"
+            exit 0
+          fi
+      
+      - name: Check for breaking changes
+        id: breaking
+        run: |
+          # Get previous version
+          git show HEAD^:docs/api/openapi.yaml > openapi.previous.yaml 2>/dev/null || true
+          
+          if [ -f "openapi.previous.yaml" ] && [ -f "docs/api/openapi.yaml" ]; then
+            echo "Checking for breaking changes..."
+            oasdiff breaking openapi.previous.yaml docs/api/openapi.yaml > breaking-changes.txt || true
+            
+            if [ -s breaking-changes.txt ]; then
+              echo "has_breaking=true" >> $GITHUB_OUTPUT
+              echo "⚠️ Breaking changes detected:"
+              cat breaking-changes.txt
+            else
+              echo "has_breaking=false" >> $GITHUB_OUTPUT
+              echo "✅ No breaking changes"
+            fi
+          fi
+      
+      - name: Comment on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let comment = '## 🔍 API Contract Validation\n\n';
+            
+            if ('${{ steps.breaking.outputs.has_breaking }}' === 'true') {
+              const breakingChanges = fs.readFileSync('breaking-changes.txt', 'utf8');
+              comment += '### ⚠️ Breaking Changes Detected\n\n';
+              comment += '```\n' + breakingChanges + '\n```\n\n';
+              comment += '**Please update the API version or provide migration guide.**\n\n';
+            } else {
+              comment += '✅ **No breaking changes detected**\n\n';
+            }
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+  generate-validators:
+    name: Generate Validators & Types
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'pull_request' || 
+      github.event.inputs.action == 'generate-all' ||
+      contains(github.event.comment.body, '@claude generate-validators')
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
+      - name: Install dependencies
+        run: |
+          pip install datamodel-code-generator[http]
+          npm install -g openapi-zod-client
+          npm install -g openapi-typescript
+      
+      - name: Generate Pydantic models
+        run: |
+          if [ -f "docs/api/openapi.yaml" ]; then
+            datamodel-codegen \
+              --input docs/api/openapi.yaml \
+              --output services/api/schemas/ \
+              --target-python-version 3.11 \
+              --use-schema-description \
+              --field-constraints \
+              --use-default \
+              --reuse-model \
+              --enum-field-as-literal one
+            
+            echo "✅ Pydantic models generated"
+          fi
+      
+      - name: Generate Zod schemas
+        run: |
+          if [ -f "docs/api/openapi.yaml" ]; then
+            openapi-zod-client \
+              docs/api/openapi.yaml \
+              --output sdk/schemas/index.ts \
+              --with-alias
+            
+            echo "✅ Zod schemas generated"
+          fi
+      
+      - name: Generate TypeScript types
+        run: |
+          if [ -f "docs/api/openapi.yaml" ]; then
+            openapi-typescript \
+              docs/api/openapi.yaml \
+              --output sdk/types/api.d.ts
+            
+            echo "✅ TypeScript types generated"
+          fi
+      
+      - name: Commit changes
+        if: github.event_name == 'pull_request'
+        run: |
+          git config --global user.name "API Bot"
+          git config --global user.email "api@example.com"
+          git add services/api/schemas/ sdk/schemas/ sdk/types/
+          git diff --staged --quiet || git commit -m "chore: Update generated validators and types"
+          git push
+
+  generate-sdk:
+    name: Generate SDK Clients
+    runs-on: ubuntu-latest
+    if: |
+      github.event.inputs.action == 'generate-sdk' ||
+      github.event.inputs.action == 'generate-all' ||
+      contains(github.event.comment.body, '@claude generate-sdk')
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup environments
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+      
+      - name: Install SDK generators
+        run: |
+          npm install -g @openapitools/openapi-generator-cli
+          pip install openapi-python-client
+          go install github.com/deepmap/oapi-codegen/v2/cmd/oapi-codegen@latest
+      
+      - name: Generate TypeScript SDK
+        run: |
+          if [ -f "docs/api/openapi.yaml" ]; then
+            openapi-generator-cli generate \
+              -i docs/api/openapi.yaml \
+              -g typescript-fetch \
+              -o sdk/clients/typescript \
+              --additional-properties=supportsES6=true,npmName=@myapp/api-client,npmVersion=1.0.0
+          fi
+      
+      - name: Generate Python SDK
+        run: |
+          if [ -f "docs/api/openapi.yaml" ]; then
+            openapi-python-client generate \
+              --path docs/api/openapi.yaml \
+              --output-path sdk/clients/python \
+              --overwrite
+          fi
+      
+      - name: Generate Go SDK
+        run: |
+          if [ -f "docs/api/openapi.yaml" ]; then
+            mkdir -p sdk/clients/go
+            oapi-codegen \
+              -package client \
+              -generate types,client \
+              docs/api/openapi.yaml > sdk/clients/go/client.go
+          fi
+      
+      - name: Create PR
+        if: github.event_name != 'pull_request'
+        run: |
+          git config --global user.name "API Bot"
+          git config --global user.email "api@example.com"
+          git checkout -b update-sdk-${{ github.run_id }}
+          git add sdk/clients/
+          git commit -m "feat: Update SDK clients from OpenAPI spec"
+          git push origin update-sdk-${{ github.run_id }}
+          
+          gh pr create \
+            --title "feat: Update SDK clients" \
+            --body "Auto-generated SDK clients from OpenAPI specification" \
+            --base main
+
+  generate-contract-tests:
+    name: Generate & Run Contract Tests
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          pip install pytest httpx fastapi sqlalchemy
+          pip install -r requirements.txt || true
+      
+      - name: Generate contract tests with Claude
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -f "docs/api/openapi.yaml" ]; then
+            # Use Claude to generate comprehensive contract tests
+            claude api-contractor "Generate comprehensive contract tests from docs/api/openapi.yaml including:
+            - Request validation tests
+            - Response schema tests
+            - Error handling tests
+            - Edge cases
+            - Authentication tests
+            Save to tests/contract/"
+          fi
+      
+      - name: Run contract tests
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/test_db
+        run: |
+          if [ -d "tests/contract" ]; then
+            pytest tests/contract/ -v --tb=short --junit-xml=test-results.xml
+          fi
+      
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: contract-test-results
+          path: test-results.xml
+      
+      - name: Comment test results
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let comment = '## 🧪 Contract Test Results\n\n';
+            
+            if (fs.existsSync('test-results.xml')) {
+              // Parse test results
+              const xml = fs.readFileSync('test-results.xml', 'utf8');
+              const passed = (xml.match(/failures="0"/g) || []).length > 0;
+              
+              if (passed) {
+                comment += '✅ **All contract tests passed**\n';
+              } else {
+                comment += '❌ **Some contract tests failed**\n';
+                comment += 'Please check the test results for details.\n';
+              }
+            } else {
+              comment += '⚠️ No contract tests were run\n';
+            }
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+  generate-changelog:
+    name: Generate API Changelog
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
+      - name: Generate changelog with Claude
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          # Get previous version
+          git show origin/main:docs/api/openapi.yaml > openapi.previous.yaml 2>/dev/null || true
+          
+          if [ -f "openapi.previous.yaml" ] && [ -f "docs/api/openapi.yaml" ]; then
+            # Use Claude to generate detailed changelog
+            claude api-contractor "Compare openapi.previous.yaml to docs/api/openapi.yaml and generate:
+            1. List of new endpoints
+            2. List of modified endpoints (with details)
+            3. List of deprecated endpoints
+            4. Breaking changes (if any)
+            5. Migration guide (if breaking changes)
+            Output as JSON" --output-format json > api-changes.json
+            
+            # Generate formatted changelog
+            python3 .claude/scripts/format_changelog.py
+          fi
+      
+      - name: Post changelog as PR comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            
+            if (fs.existsSync('api-changelog.md')) {
+              const changelog = fs.readFileSync('api-changelog.md', 'utf8');
+              
+              github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: changelog
+              });
+            }
+      
+      - name: Update CHANGELOG.md
+        run: |
+          if [ -f "api-changelog.md" ]; then
+            # Prepend to main changelog
+            if [ -f "docs/api/CHANGELOG.md" ]; then
+              cat api-changelog.md docs/api/CHANGELOG.md > temp.md
+              mv temp.md docs/api/CHANGELOG.md
+            else
+              mv api-changelog.md docs/api/CHANGELOG.md
+            fi
+            
+            git config --global user.name "API Bot"
+            git config --global user.email "api@example.com"
+            git add docs/api/CHANGELOG.md
+            git commit -m "docs: Update API changelog"
+            git push
+          fi
+
+  api-documentation:
+    name: Generate API Documentation
+    runs-on: ubuntu-latest
+    if: |
+      github.event.inputs.action == 'generate-docs' ||
+      contains(github.event.comment.body, '@claude generate-docs')
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
+      - name: Install documentation tools
+        run: |
+          npm install -g @redocly/cli
+          npm install -g widdershins
+          npm install -g openapi-to-postman
+      
+      - name: Generate HTML documentation
+        run: |
+          if [ -f "docs/api/openapi.yaml" ]; then
+            redocly build-docs \
+              docs/api/openapi.yaml \
+              --output docs/api/index.html \
+              --theme.openapi.theme.colors.primary.main="#FF6B6B"
+          fi
+      
+      - name: Generate Markdown documentation
+        run: |
+          if [ -f "docs/api/openapi.yaml" ]; then
+            widdershins \
+              --language_tabs 'python:Python' 'javascript:JavaScript' 'go:Go' 'shell:cURL' \
+              --summary docs/api/openapi.yaml \
+              -o docs/api/API.md
+          fi
+      
+      - name: Generate Postman collection
+        run: |
+          if [ -f "docs/api/openapi.yaml" ]; then
+            openapi-to-postman \
+              -s docs/api/openapi.yaml \
+              -o docs/api/postman-collection.json \
+              -p
+          fi
+      
+      - name: Deploy to GitHub Pages
+        if: github.ref == 'refs/heads/main'
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./docs/api
+          destination_dir: api
+      
+      - name: Create PR with docs
+        if: github.event_name != 'pull_request'
+        run: |
+          git config --global user.name "API Bot"
+          git config --global user.email "api@example.com"
+          git checkout -b update-api-docs-${{ github.run_id }}
+          git add docs/api/
+          git commit -m "docs: Update API documentation"
+          git push origin update-api-docs-${{ github.run_id }}
+          
+          gh pr create \
+            --title "docs: Update API documentation" \
+            --body "Auto-generated API documentation from OpenAPI specification" \
+            --base main

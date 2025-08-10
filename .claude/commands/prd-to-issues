@@ -1,0 +1,180 @@
+#!/bin/bash
+# Convert PRD acceptance criteria to GitHub issues
+
+echo "📋 Converting PRD to GitHub issues..."
+
+# Check if gh CLI is installed
+if ! command -v gh &> /dev/null; then
+  echo "❌ GitHub CLI not installed"
+  echo "Install with: brew install gh"
+  exit 1
+fi
+
+# Check if authenticated
+if ! gh auth status &> /dev/null; then
+  echo "❌ Not authenticated with GitHub"
+  echo "Run: gh auth login"
+  exit 1
+fi
+
+# Find PRD file
+PRD_FILE="${1:-docs/PRD.md}"
+if [ ! -f "$PRD_FILE" ]; then
+  echo "❌ PRD file not found: $PRD_FILE"
+  exit 1
+fi
+
+# Parse acceptance criteria and create issues
+python3 << 'EOF'
+import re
+import subprocess
+import sys
+import os
+
+prd_file = os.environ.get('PRD_FILE', 'docs/PRD.md')
+
+# Read PRD
+with open(prd_file, 'r') as f:
+    content = f.read()
+
+# Extract acceptance criteria
+ac_pattern = r'- \[ \] (AC-\d+): (.+?)(?=\n|$)'
+criteria = re.findall(ac_pattern, content)
+
+if not criteria:
+    print("No acceptance criteria found in format: - [ ] AC-XXX: Description")
+    sys.exit(1)
+
+print(f"Found {len(criteria)} acceptance criteria")
+
+# Extract project context
+project_match = re.search(r'#\s+(.+?)\s+PRD', content)
+project_name = project_match.group(1) if project_match else "Project"
+
+# Extract milestone if exists
+milestone_match = re.search(r'Milestone:\s*(.+)', content)
+milestone = milestone_match.group(1) if milestone_match else "MVP"
+
+# Create issues
+created_issues = []
+for ac_id, description in criteria:
+    # Determine labels based on content
+    labels = ["acceptance-criteria"]
+    
+    if any(word in description.lower() for word in ['api', 'endpoint', 'backend']):
+        labels.append("backend")
+    if any(word in description.lower() for word in ['ui', 'screen', 'frontend', 'component']):
+        labels.append("frontend")
+    if any(word in description.lower() for word in ['database', 'migration', 'schema']):
+        labels.append("database")
+    if any(word in description.lower() for word in ['auth', 'security', 'permission']):
+        labels.append("security")
+    
+    # Estimate based on keywords
+    if any(word in description.lower() for word in ['simple', 'basic', 'add']):
+        labels.append("size-s")
+    elif any(word in description.lower() for word in ['complex', 'integrate', 'system']):
+        labels.append("size-l")
+    else:
+        labels.append("size-m")
+    
+    # Create issue
+    title = f"[{ac_id}] {description}"
+    body = f"""## Acceptance Criteria
+{description}
+
+## Source
+- PRD: `{prd_file}`
+- ID: `{ac_id}`
+
+## Definition of Done
+- [ ] Implementation complete
+- [ ] Tests written and passing
+- [ ] Documentation updated
+- [ ] Code reviewed
+- [ ] Deployed to staging
+"""
+    
+    # Create GitHub issue
+    cmd = [
+        'gh', 'issue', 'create',
+        '--title', title,
+        '--body', body,
+        '--label', ','.join(labels)
+    ]
+    
+    if milestone:
+        cmd.extend(['--milestone', milestone])
+    
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode == 0:
+            issue_url = result.stdout.strip()
+            created_issues.append((ac_id, issue_url))
+            print(f"✅ Created: {ac_id} -> {issue_url}")
+        else:
+            print(f"❌ Failed to create {ac_id}: {result.stderr}")
+    except Exception as e:
+        print(f"❌ Error creating {ac_id}: {e}")
+
+# Create tracking issue
+if created_issues:
+    tracking_body = f"""## PRD Implementation Tracking
+
+This issue tracks the implementation of acceptance criteria from `{prd_file}`.
+
+### Acceptance Criteria Issues
+"""
+    for ac_id, url in created_issues:
+        tracking_body += f"- [ ] {ac_id}: {url}\n"
+    
+    tracking_body += f"""
+
+### Progress
+- Total: {len(created_issues)} issues
+- Completed: 0
+- In Progress: 0
+
+### Source
+- PRD: `{prd_file}`
+- Created: $(date)
+"""
+    
+    cmd = [
+        'gh', 'issue', 'create',
+        '--title', f'[Tracking] {project_name} Implementation',
+        '--body', tracking_body,
+        '--label', 'epic,tracking'
+    ]
+    
+    if milestone:
+        cmd.extend(['--milestone', milestone])
+    
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode == 0:
+        print(f"\n📊 Created tracking issue: {result.stdout.strip()}")
+
+print(f"\n✅ Created {len(created_issues)} issues from PRD")
+EOF
+
+# Add to project board if specified
+if [ -n "$2" ]; then
+  PROJECT_NAME="$2"
+  echo "Adding issues to project: $PROJECT_NAME"
+  
+  # Get issue numbers
+  ISSUES=$(gh issue list --label "acceptance-criteria" --limit 100 --json number --jq '.[].number')
+  
+  for ISSUE_NUM in $ISSUES; do
+    gh issue edit $ISSUE_NUM --add-project "$PROJECT_NAME"
+  done
+  
+  echo "✅ Added issues to project board"
+fi
+
+echo "
+Next steps:
+1. Review created issues: gh issue list --label acceptance-criteria
+2. Assign to team members: gh issue edit <number> --assignee <user>
+3. Add to sprint: gh issue edit <number> --milestone <sprint>
+"

@@ -1,0 +1,2 @@
+# Requirements for Claude API integration in CI/CD
+anthropic>=0.18.0

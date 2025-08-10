@@ -1,0 +1,273 @@
+name: Canary Deployment Template
+
+# This workflow demonstrates a safe canary deployment pattern.
+# It's a TEMPLATE that shows the stages without requiring real infrastructure.
+# Customize it for your actual deployment needs (K8s, AWS, GCP, etc.)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to deploy (e.g., v1.2.3)'
+        required: false
+        default: 'v1.0.0'
+      environment:
+        description: 'Target environment'
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+        default: staging
+
+permissions:
+  contents: read
+  deployments: write
+  issues: write
+
+jobs:
+  # STAGE 1: Pre-deployment checks
+  prepare:
+    name: 🔍 Pre-Deployment Checks
+    runs-on: ubuntu-latest
+    outputs:
+      ready: ${{ steps.checks.outputs.ready }}
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Run pre-deployment checks
+        id: checks
+        run: |
+          echo "🔍 Running pre-deployment checks..."
+          echo ""
+          echo "Version: ${{ inputs.version || 'latest' }}"
+          echo "Environment: ${{ inputs.environment }}"
+          echo ""
+          echo "Checking:"
+          echo "✅ Build artifacts exist"
+          echo "✅ Tests passed"
+          echo "✅ Security scans completed"
+          echo "✅ Dependencies up to date"
+          echo ""
+          echo "ready=true" >> $GITHUB_OUTPUT
+      
+      - name: Generate deployment plan
+        run: |
+          cat > deployment-plan.md << EOF
+          # Deployment Plan
+          
+          **Version**: ${{ inputs.version || 'latest' }}
+          **Environment**: ${{ inputs.environment }}
+          **Strategy**: Canary (5% → 25% → 50% → 100%)
+          
+          ## Stages
+          1. Deploy to 5% of traffic (5 min monitoring)
+          2. Increase to 25% (15 min monitoring)
+          3. Increase to 50% (30 min monitoring)
+          4. Full deployment to 100%
+          
+          ## Rollback Triggers
+          - Error rate > 1%
+          - P95 latency > 500ms
+          - Health check failures
+          - Manual intervention
+          
+          ## Monitoring
+          - CloudWatch/Datadog/Prometheus dashboards
+          - PagerDuty alerts configured
+          - Slack notifications enabled
+          EOF
+          
+          cat deployment-plan.md
+
+  # STAGE 2: Canary deployment (5%)
+  canary-5:
+    name: 🐤 Canary 5%
+    runs-on: ubuntu-latest
+    needs: prepare
+    if: needs.prepare.outputs.ready == 'true'
+    environment:
+      name: ${{ inputs.environment }}-canary
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Deploy canary (5% traffic)
+        run: |
+          echo "🚀 Deploying canary to 5% of traffic..."
+          echo ""
+          echo "EXAMPLE: Real deployment commands would go here:"
+          echo "  kubectl set image deployment/app app=${{ inputs.version }}"
+          echo "  aws deploy create-deployment --application my-app"
+          echo "  gcloud app deploy --version=${{ inputs.version }}"
+          echo ""
+          echo "📊 Simulating deployment..."
+          sleep 2
+          echo "✅ Canary deployed to 5% of traffic"
+      
+      - name: Monitor canary health (5 min)
+        run: |
+          echo "📊 Monitoring canary metrics..."
+          
+          # Simulate monitoring for demo (in reality, this would be longer)
+          for i in {1..3}; do
+            echo ""
+            echo "Check $i/3 (simulated):"
+            echo "  📈 Request rate: 1,234 req/s"
+            echo "  ⚡ P95 latency: 142ms (baseline: 150ms)"
+            echo "  ❌ Error rate: 0.02% (threshold: 1%)"
+            echo "  💾 Memory: 512MB (limit: 1GB)"
+            echo "  🔥 CPU: 35% (limit: 80%)"
+            sleep 2
+          done
+          
+          echo ""
+          echo "✅ All metrics within acceptable range"
+
+  # STAGE 3: Increase to 25%
+  canary-25:
+    name: 🐤 Canary 25%
+    runs-on: ubuntu-latest
+    needs: canary-5
+    environment:
+      name: ${{ inputs.environment }}-canary
+    
+    steps:
+      - name: Increase canary traffic to 25%
+        run: |
+          echo "📈 Increasing canary to 25% of traffic..."
+          echo ""
+          echo "EXAMPLE: Traffic split commands:"
+          echo "  kubectl patch virtualservice my-app --type merge -p '{\"spec\":{\"http\":[{\"weight\":25}]}}'"
+          echo "  aws elbv2 modify-target-group-attributes --target-group-arn arn:aws:elasticloadbalancing"
+          echo ""
+          sleep 2
+          echo "✅ Canary now serving 25% of traffic"
+      
+      - name: Extended monitoring (15 min)
+        run: |
+          echo "📊 Extended monitoring at 25% traffic..."
+          echo "In production, this would monitor for 15 minutes"
+          echo ""
+          
+          # Simulate extended monitoring
+          for i in {1..3}; do
+            echo "Health check $i/3: ✅ PASSED"
+            sleep 1
+          done
+          
+          echo ""
+          echo "✅ No anomalies detected at 25% traffic"
+
+  # STAGE 4: Increase to 50%
+  canary-50:
+    name: 🐥 Canary 50%
+    runs-on: ubuntu-latest
+    needs: canary-25
+    environment:
+      name: ${{ inputs.environment }}-canary
+    
+    steps:
+      - name: Increase canary traffic to 50%
+        run: |
+          echo "📈 Increasing canary to 50% of traffic..."
+          sleep 2
+          echo "✅ Canary now serving 50% of traffic"
+      
+      - name: Extended monitoring (30 min)
+        run: |
+          echo "📊 Extended monitoring at 50% traffic..."
+          echo "In production, this would monitor for 30 minutes"
+          sleep 3
+          echo "✅ System stable at 50% traffic"
+
+  # STAGE 5: Full deployment
+  full-deployment:
+    name: 🚀 Full Deployment (100%)
+    runs-on: ubuntu-latest
+    needs: canary-50
+    environment:
+      name: ${{ inputs.environment }}
+    
+    steps:
+      - name: Complete deployment to 100%
+        run: |
+          echo "🚀 Completing deployment to 100% of traffic..."
+          echo ""
+          echo "EXAMPLE: Full deployment commands:"
+          echo "  kubectl set image deployment/app-stable app=${{ inputs.version }}"
+          echo "  kubectl delete deployment/app-canary"
+          echo ""
+          sleep 2
+          echo "✅ Version ${{ inputs.version }} deployed to 100% of traffic"
+      
+      - name: Post-deployment verification
+        run: |
+          echo "🔍 Running post-deployment checks..."
+          echo ""
+          echo "✅ All instances healthy"
+          echo "✅ No error spike detected"
+          echo "✅ Performance metrics normal"
+          echo ""
+          echo "🎉 Deployment completed successfully!"
+
+  # STAGE 6: Rollback (only on failure)
+  rollback:
+    name: 🔄 Automatic Rollback
+    runs-on: ubuntu-latest
+    needs: [canary-5, canary-25, canary-50, full-deployment]
+    if: failure()
+    
+    steps:
+      - name: Initiate rollback
+        run: |
+          echo "⚠️ Deployment failed - initiating rollback..."
+          echo ""
+          echo "EXAMPLE: Rollback commands:"
+          echo "  kubectl rollout undo deployment/app"
+          echo "  aws deploy stop-deployment --deployment-id xxx --auto-rollback"
+          echo ""
+          echo "📧 Notifying team about rollback..."
+          echo "✅ Rollback completed"
+      
+      - name: Create incident report
+        run: |
+          echo "📝 Creating incident report..."
+          cat > incident.md << EOF
+          # Deployment Rollback Incident
+          
+          **Time**: $(date)
+          **Version**: ${{ inputs.version }}
+          **Environment**: ${{ inputs.environment }}
+          **Stage Failed**: Check workflow logs
+          
+          ## Next Steps
+          1. Review deployment logs
+          2. Check monitoring dashboards
+          3. Run root cause analysis
+          4. Update runbooks if needed
+          EOF
+          
+          echo "✅ Incident report created"
+
+  # Success notification
+  notify-success:
+    name: ✅ Success Notification
+    runs-on: ubuntu-latest
+    needs: full-deployment
+    if: success()
+    
+    steps:
+      - name: Send success notification
+        run: |
+          echo "📧 Sending success notification..."
+          echo ""
+          echo "EXAMPLE: Notification integrations:"
+          echo "  - Slack: #deployments channel"
+          echo "  - Email: devops@company.com"
+          echo "  - PagerDuty: resolve incident"
+          echo ""
+          echo "Message:"
+          echo "✅ Successfully deployed ${{ inputs.version }} to ${{ inputs.environment }}"
+          echo "Deployment completed in $(date)"

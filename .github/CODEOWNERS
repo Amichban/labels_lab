@@ -1,0 +1,121 @@
+# CODEOWNERS - Claude Agent Ownership Mapping
+# 
+# This file maps code paths to responsible Claude agents.
+# When files matching these patterns are changed, the corresponding
+# agent will be automatically invoked for review.
+#
+# Format: pattern @claude-agent-name
+# Agents are defined in .claude/subagents/
+
+# Default reviewer for all files
+* @claude-reviewer
+
+# Frontend Development
+/apps/web/ @claude-frontend
+/apps/mobile/ @claude-frontend
+/packages/ui/ @claude-frontend
+/packages/components/ @claude-frontend
+*.tsx @claude-frontend
+*.jsx @claude-frontend
+*.css @claude-frontend
+*.scss @claude-frontend
+tailwind.config.* @claude-frontend
+next.config.* @claude-frontend
+
+# Backend Development
+/services/api/ @claude-backend
+/services/worker/ @claude-backend
+/packages/shared/ @claude-backend
+/packages/core/ @claude-backend
+*.py @claude-backend
+requirements*.txt @claude-backend
+pyproject.toml @claude-backend
+poetry.lock @claude-backend
+
+# Database & Migrations
+/migrations/ @claude-migrator
+/alembic/ @claude-migrator
+/prisma/ @claude-migrator
+*.sql @claude-migrator
+**/models.py @claude-migrator
+**/schema.prisma @claude-migrator
+**/entities/ @claude-migrator
+
+# Testing
+/tests/ @claude-test-runner
+/e2e/ @claude-test-runner
+/__tests__/ @claude-test-runner
+*.test.ts @claude-test-runner
+*.test.tsx @claude-test-runner
+*.test.js @claude-test-runner
+*.spec.ts @claude-test-runner
+*.spec.js @claude-test-runner
+jest.config.* @claude-test-runner
+vitest.config.* @claude-test-runner
+pytest.ini @claude-test-runner
+.coverage @claude-test-runner
+
+# API Design & Documentation
+/docs/api/ @claude-api-contractor
+/docs/openapi/ @claude-api-contractor
+**/openapi.yaml @claude-api-contractor
+**/openapi.json @claude-api-contractor
+**/swagger.yaml @claude-api-contractor
+**/graphql.schema @claude-api-contractor
+**/schema.graphql @claude-api-contractor
+
+# Product Documentation
+/docs/PRD.md @claude-discovery-writer
+/docs/requirements/ @claude-discovery-writer
+/docs/features/ @claude-discovery-writer
+README.md @claude-discovery-writer
+CONTRIBUTING.md @claude-discovery-writer
+CHANGELOG.md @claude-discovery-writer
+
+# UX/UI Design
+/docs/ux/ @claude-journey-planner
+/docs/wireframes/ @claude-journey-planner
+/docs/user-flows/ @claude-journey-planner
+/design/ @claude-journey-planner
+*.fig @claude-journey-planner
+*.sketch @claude-journey-planner
+
+# Security
+/.env.example @claude-security-scanner
+/security/ @claude-security-scanner
+/auth/ @claude-security-scanner
+*.pem @claude-security-scanner
+*.key @claude-security-scanner
+*.cert @claude-security-scanner
+**/auth.ts @claude-security-scanner
+**/auth.py @claude-security-scanner
+**/permissions.py @claude-security-scanner
+
+# Infrastructure & DevOps
+/.github/ @claude-scaffolder
+/.gitlab/ @claude-scaffolder
+/.claude/ @claude-scaffolder
+/scripts/ @claude-scaffolder
+/terraform/ @claude-scaffolder
+/kubernetes/ @claude-scaffolder
+/helm/ @claude-scaffolder
+Dockerfile* @claude-scaffolder
+docker-compose*.yml @claude-scaffolder
+.dockerignore @claude-scaffolder
+Makefile @claude-scaffolder
+*.yaml @claude-scaffolder
+*.yml @claude-scaffolder
+
+# Claude-specific configuration
+/CLAUDE.md @claude-scaffolder
+/.claude/subagents/ @claude-scaffolder
+/.claude/hooks.yaml @claude-scaffolder
+/.claude/settings.json @claude-scaffolder
+/.claude/context-rules.yml @claude-scaffolder
+
+# Special handling for sensitive files
+.env @claude-security-scanner
+secrets.* @claude-security-scanner
+credentials.* @claude-security-scanner
+*_rsa @claude-security-scanner
+*.pfx @claude-security-scanner

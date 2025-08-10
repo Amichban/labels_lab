@@ -1,0 +1,340 @@
+# Claude CI Configuration
+# Cost controls and rate limiting for Claude API usage
+
+ci_teacher:
+  # Maximum conversation turns per session
+  max_turns: 3
+  
+  # Timeout in seconds for Claude responses
+  timeout: 120
+  
+  # Maximum tokens per response
+  max_tokens: 4000
+  
+  # Concurrent Claude calls allowed
+  concurrency: 1
+  
+  # Model selection (auto-selects based on complexity)
+  model_strategy:
+    simple_fixes: "claude-3-haiku"      # Fast, cheap for simple errors
+    complex_fixes: "claude-3-sonnet"     # Balanced for most cases
+    architecture: "claude-3-opus"        # Premium for complex issues
+  
+  # Rate limiting
+  rate_limits:
+    per_hour: 10         # Max calls per hour
+    per_day: 50          # Max calls per day
+    per_pr: 5            # Max calls per PR
+    per_user: 3          # Max calls per user per day
+  
+  # Cost controls
+  cost_limits:
+    per_run: 0.50        # Max $ per CI run
+    per_day: 10.00       # Max $ per day
+    per_month: 100.00    # Max $ per month
+    alert_at: 0.80       # Alert at 80% of limit
+  
+  # Approved fix types (auto-apply)
+  allowed_fixes:
+    - "type_errors"      # TypeScript type mismatches
+    - "import_errors"    # Missing imports
+    - "test_assertions"  # Test expectation updates
+    - "lint_issues"      # ESLint/Prettier fixes
+    - "syntax_errors"    # Basic syntax issues
+    - "null_safety"      # Optional chaining additions
+  
+  # Blocked fixes (require manual review)
+  blocked_fixes:
+    - "security_changes" # Security-related code
+    - "api_key_changes"  # Credential modifications
+    - "delete_operations" # File/data deletions
+    - "dependency_changes" # Package.json updates
+    - "config_changes"   # Critical config files
+    - "database_migrations" # Schema changes
+  
+  # Error categorization
+  error_priorities:
+    build_failure: "critical"
+    test_failure: "high"
+    lint_warning: "medium"
+    type_warning: "low"
+  
+  # Auto-fix confidence thresholds
+  confidence_thresholds:
+    auto_apply: 0.95     # Apply without review
+    suggest: 0.70        # Suggest with review
+    skip: 0.50           # Too uncertain, skip
+  
+  # Notification settings
+  notifications:
+    on_limit_reached: true
+    on_auto_fix: true
+    on_manual_required: true
+    channels:
+      - "slack"
+      - "github"
+
+# Feature flag configuration
+feature_flags:
+  # Automatic cleanup settings
+  cleanup:
+    enabled: true
+    after_days_at_100: 30  # Days at 100% before cleanup
+    max_flag_age: 90       # Maximum age in days
+    check_frequency: "daily" # How often to check
+    require_approval: true  # Require approval for cleanup
+  
+  # Rollout settings
+  rollout:
+    strategies:
+      - "percentage"       # % of users
+      - "user_group"       # Specific groups
+      - "geographic"       # By region
+    
+    default_stages:
+      - percent: 1
+        duration: "1h"
+        monitor: true
+      - percent: 5
+        duration: "4h"
+        monitor: true
+      - percent: 25
+        duration: "1d"
+        monitor: true
+      - percent: 50
+        duration: "2d"
+        monitor: true
+      - percent: 100
+        duration: "30d"
+        monitor: false
+  
+  # Monitoring
+  monitoring:
+    metrics:
+      - "error_rate"
+      - "latency_p95"
+      - "conversion_rate"
+      - "user_engagement"
+    
+    rollback_conditions:
+      error_rate_increase: 0.05  # 5% increase
+      latency_increase: 2.0       # 2x slower
+      conversion_drop: 0.10       # 10% drop
+    
+    alert_channels:
+      - "slack"
+      - "pagerduty"
+
+# Testing configuration
+testing:
+  # Pyramid strategy
+  pyramid:
+    unit_ratio: 70        # 70% unit tests
+    integration_ratio: 20 # 20% integration
+    e2e_ratio: 10        # 10% E2E
+  
+  # Flake detection
+  flake_detection:
+    enabled: true
+    retry_count: 3       # Retry flaky tests
+    quarantine_after: 5  # Quarantine after 5 flakes
+    report_threshold: 2  # Report after 2 flakes
+  
+  # Smart test selection
+  affected_tests:
+    enabled: true
+    strategy: "git_diff" # Use git diff for selection
+    include_dependencies: true
+    max_depth: 3         # Dependency depth
+  
+  # Performance
+  parallel:
+    enabled: true
+    max_workers: 4
+    timeout_minutes: 30
+
+# API contract configuration
+api_contracts:
+  # Validation
+  validation:
+    openapi: true
+    graphql: true
+    grpc: false
+    
+  # SDK generation
+  sdk_generation:
+    typescript: true
+    python: true
+    go: false
+    
+  # Breaking change detection
+  breaking_changes:
+    block_on_breaking: true
+    require_version_bump: true
+    notify_consumers: true
+
+# Security settings
+security:
+  # Secret scanning
+  secret_scanning:
+    enabled: true
+    patterns:
+      - "api[_-]?key"
+      - "secret[_-]?key"
+      - "password"
+      - "token"
+      - "bearer"
+    
+  # Dependency scanning
+  dependency_scanning:
+    enabled: true
+    severity_threshold: "high"
+    auto_update_patches: true
+    
+  # Code scanning
+  code_scanning:
+    enabled: true
+    tools:
+      - "semgrep"
+      - "codeql"
+
+# Deployment settings
+deployment:
+  # Environments
+  environments:
+    development:
+      auto_deploy: true
+      requires_approval: false
+    
+    staging:
+      auto_deploy: true
+      requires_approval: false
+      
+    production:
+      auto_deploy: false
+      requires_approval: true
+      approval_count: 2
+  
+  # Rollback
+  rollback:
+    auto_rollback: true
+    monitoring_period: "10m"
+    success_criteria:
+      error_rate: 0.01   # < 1% errors
+      response_time: 200 # < 200ms p95
+  
+  # Canary deployments
+  canary:
+    enabled: true
+    initial_percentage: 5
+    increment: 20
+    interval: "30m"
+
+# Monitoring and observability
+observability:
+  # Metrics
+  metrics:
+    provider: "prometheus"
+    retention_days: 30
+    
+  # Logging
+  logging:
+    provider: "datadog"
+    level: "info"
+    retention_days: 7
+    
+  # Tracing
+  tracing:
+    provider: "jaeger"
+    sample_rate: 0.1
+    
+  # Alerting
+  alerting:
+    providers:
+      - "pagerduty"
+      - "slack"
+    
+    rules:
+      - name: "High Error Rate"
+        condition: "error_rate > 0.05"
+        severity: "critical"
+        
+      - name: "Slow Response"
+        condition: "p95_latency > 1000"
+        severity: "warning"
+        
+      - name: "Low Traffic"
+        condition: "requests_per_minute < 10"
+        severity: "info"
+
+# Resource limits
+resources:
+  # Claude API
+  claude:
+    daily_budget: 10.00
+    monthly_budget: 100.00
+    
+  # GitHub Actions
+  actions:
+    concurrent_workflows: 5
+    timeout_minutes: 60
+    
+  # Compute
+  compute:
+    max_parallel_jobs: 10
+    max_job_duration: "1h"
+
+# Notification channels
+notifications:
+  slack:
+    webhook_url: "${SLACK_WEBHOOK_URL}"
+    channels:
+      ci_failures: "#ci-failures"
+      deployments: "#deployments"
+      security: "#security"
+      approvals: "#approvals"
+  
+  github:
+    create_issues: true
+    add_comments: true
+    assign_to:
+      - "@team-lead"
+      - "@oncall"
+  
+  email:
+    enabled: false
+    smtp_server: "${SMTP_SERVER}"
+    recipients:
+      - "team@example.com"
+  
+  pagerduty:
+    enabled: false
+    api_key: "${PAGERDUTY_API_KEY}"
+    service_id: "${PAGERDUTY_SERVICE_ID}"
+
+# Compliance and governance
+governance:
+  # Code review
+  code_review:
+    required_approvals: 1
+    dismiss_stale_reviews: true
+    require_up_to_date: true
+    
+  # Branch protection
+  branch_protection:
+    protect_main: true
+    required_checks:
+      - "lint"
+      - "test"
+      - "build"
+      - "security"
+    
+  # Audit logging
+  audit:
+    enabled: true
+    events:
+      - "deployment"
+      - "rollback"
+      - "config_change"
+      - "approval"
+    retention_days: 90

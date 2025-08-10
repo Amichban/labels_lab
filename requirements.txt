@@ -1,0 +1,23 @@
+# Python dependencies for Claude Native Template
+# Add your project-specific dependencies here
+
+# Testing
+pytest>=7.0.0
+pytest-cov>=4.0.0
+pytest-asyncio>=0.21.0
+
+# Linting & Formatting
+black>=23.0.0
+flake8>=6.0.0
+mypy>=1.0.0
+bandit>=1.7.0
+
+# Development
+pydantic>=2.0.0
+python-dotenv>=1.0.0
+
+# Add your application dependencies below:
+# fastapi>=0.100.0
+# sqlalchemy>=2.0.0
+# alembic>=1.11.0
+# redis>=4.5.0

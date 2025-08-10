@@ -1,0 +1,380 @@
+name: Documentation Freshness Check
+
+on:
+  schedule:
+    # Run nightly at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - 'src/**'
+      - 'services/**'
+      - 'apps/**'
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  check-docs-freshness:
+    name: Check Documentation Freshness
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Need full history for comparison
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
+      - name: Analyze code changes vs documentation
+        id: analyze
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          # Get recent code changes (last 7 days)
+          SINCE_DATE=$(date -d '7 days ago' +%Y-%m-%d)
+          
+          # Find changed code files
+          git log --since="$SINCE_DATE" --name-only --pretty=format: | \
+            grep -E "\.(ts|tsx|js|jsx|py|go)$" | \
+            sort -u > changed-code.txt
+          
+          # Find documentation files
+          find docs -name "*.md" -type f > all-docs.txt
+          
+          # Check which docs might need updates
+          python3 << 'EOF'
+          import os
+          import re
+          from datetime import datetime, timedelta
+          import json
+          
+          # Read changed code files
+          with open('changed-code.txt') as f:
+              changed_code = [line.strip() for line in f if line.strip()]
+          
+          # Read all documentation files
+          with open('all-docs.txt') as f:
+              all_docs = [line.strip() for line in f if line.strip()]
+          
+          # Analyze which docs might be stale
+          stale_docs = []
+          
+          for doc in all_docs:
+              # Get last modified time
+              try:
+                  mtime = os.path.getmtime(doc)
+                  last_modified = datetime.fromtimestamp(mtime)
+                  age_days = (datetime.now() - last_modified).days
+                  
+                  # Check if doc references changed code
+                  with open(doc, 'r') as f:
+                      doc_content = f.read()
+                  
+                  references_changed_code = False
+                  for code_file in changed_code:
+                      # Extract filename without path
+                      code_name = os.path.basename(code_file).split('.')[0]
+                      if code_name in doc_content:
+                          references_changed_code = True
+                          break
+                  
+                  # Mark as stale if old or references changed code
+                  if age_days > 30 or references_changed_code:
+                      stale_docs.append({
+                          'path': doc,
+                          'age_days': age_days,
+                          'references_changed_code': references_changed_code
+                      })
+              except:
+                  pass
+          
+          # Save analysis
+          with open('stale-docs.json', 'w') as f:
+              json.dump({
+                  'stale_docs': stale_docs,
+                  'changed_code': changed_code,
+                  'total_docs': len(all_docs)
+              }, f, indent=2)
+          
+          print(f"Found {len(stale_docs)} potentially stale documents")
+          print(f"Code changes: {len(changed_code)} files")
+          EOF
+          
+          # Output for next steps
+          STALE_COUNT=$(python3 -c "import json; print(len(json.load(open('stale-docs.json'))['stale_docs']))")
+          echo "stale_count=$STALE_COUNT" >> $GITHUB_OUTPUT
+      
+      - name: Generate documentation updates with Claude
+        if: steps.analyze.outputs.stale_count != '0'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          # Use Claude to analyze and update docs
+          cat stale-docs.json | claude adr-writer \
+            "Review these stale documents and recent code changes. 
+            For each stale document:
+            1. Check if it needs updates based on code changes
+            2. Generate updated content if needed
+            3. Flag documents that can be archived
+            Output as JSON with file path and updated content" \
+            --output-format json > doc-updates.json
+          
+          # Apply updates
+          python3 << 'EOF'
+          import json
+          import os
+          
+          with open('doc-updates.json') as f:
+              updates = json.load(f)
+          
+          updated_files = []
+          
+          for update in updates.get('updates', []):
+              file_path = update['path']
+              new_content = update['content']
+              
+              if new_content and new_content != 'NO_CHANGE':
+                  # Backup original
+                  os.rename(file_path, f"{file_path}.backup")
+                  
+                  # Write updated content
+                  with open(file_path, 'w') as f:
+                      f.write(new_content)
+                  
+                  updated_files.append(file_path)
+          
+          print(f"Updated {len(updated_files)} documentation files")
+          
+          # Save list of updated files
+          with open('updated-docs.txt', 'w') as f:
+              f.write('\n'.join(updated_files))
+          EOF
+      
+      - name: Check ADRs against codebase
+        run: |
+          # Find all ADRs
+          find docs/adr -name "*.md" -type f > adrs.txt || echo "No ADRs found" > adrs.txt
+          
+          # Check each ADR for relevance
+          python3 << 'EOF'
+          import os
+          import re
+          import json
+          
+          adrs_to_review = []
+          
+          if os.path.exists('docs/adr'):
+              for adr_file in os.listdir('docs/adr'):
+                  if adr_file.endswith('.md'):
+                      adr_path = os.path.join('docs/adr', adr_file)
+                      
+                      with open(adr_path) as f:
+                          content = f.read()
+                      
+                      # Extract status
+                      status_match = re.search(r'Status:\s*(\w+)', content)
+                      status = status_match.group(1) if status_match else 'unknown'
+                      
+                      # Extract date
+                      date_match = re.search(r'Date:\s*(\d{4}-\d{2}-\d{2})', content)
+                      
+                      # Check age
+                      if date_match:
+                          from datetime import datetime
+                          adr_date = datetime.strptime(date_match.group(1), '%Y-%m-%d')
+                          age_days = (datetime.now() - adr_date).days
+                          
+                          # Flag old accepted ADRs for review
+                          if status == 'accepted' and age_days > 180:
+                              adrs_to_review.append({
+                                  'path': adr_path,
+                                  'age_days': age_days,
+                                  'status': status
+                              })
+          
+          with open('adrs-to-review.json', 'w') as f:
+              json.dump(adrs_to_review, f, indent=2)
+          
+          print(f"Found {len(adrs_to_review)} ADRs that may need review")
+          EOF
+      
+      - name: Create PR with documentation updates
+        if: steps.analyze.outputs.stale_count != '0'
+        run: |
+          # Check if there are actual changes
+          if [ -f "updated-docs.txt" ] && [ -s "updated-docs.txt" ]; then
+            # Create branch
+            BRANCH="docs-freshness-$(date +%Y%m%d)"
+            git checkout -b "$BRANCH"
+            
+            # Commit changes
+            git config --global user.name "GitHub Actions"
+            git config --global user.email "actions@github.com"
+            git add docs/
+            git commit -m "docs: Update stale documentation
+            
+            - Synchronized with recent code changes
+            - Updated references and examples
+            - Reviewed ADRs for relevance
+            
+            Generated by Claude Documentation Freshness Check" || echo "No changes to commit"
+            
+            # Push branch
+            git push origin "$BRANCH" || echo "No changes to push"
+            
+            # Create PR
+            gh pr create \
+              --title "docs: Update stale documentation" \
+              --body "## 📚 Documentation Freshness Update
+              
+              This PR updates documentation that has become stale or out of sync with recent code changes.
+              
+              ### Changes
+              $(cat updated-docs.txt | sed 's/^/- /')
+              
+              ### Analysis
+              - Total documents reviewed: $(jq '.total_docs' stale-docs.json)
+              - Stale documents found: $(jq '.stale_docs | length' stale-docs.json)
+              - Code files changed: $(jq '.changed_code | length' stale-docs.json)
+              
+              ### Review Checklist
+              - [ ] Documentation accurately reflects current code
+              - [ ] Examples are up to date
+              - [ ] ADRs are still relevant
+              - [ ] No broken links
+              
+              ---
+              *Generated by Documentation Freshness workflow*" \
+              --label "documentation" \
+              --label "automated" || echo "No PR needed"
+          else
+            echo "No documentation updates needed"
+          fi
+      
+      - name: Create issue for manual review
+        if: steps.analyze.outputs.stale_count != '0'
+        run: |
+          # Check if ADRs need review
+          ADR_COUNT=$(python3 -c "import json; print(len(json.load(open('adrs-to-review.json'))))" || echo "0")
+          
+          if [ "$ADR_COUNT" -gt "0" ]; then
+            gh issue create \
+              --title "📚 Documentation Review Required" \
+              --body "## Documentation Review Required
+              
+              The automated documentation freshness check has identified items that need manual review:
+              
+              ### Stale Documentation
+              $(jq -r '.stale_docs[] | "- \(.path) (age: \(.age_days) days)"' stale-docs.json | head -10)
+              
+              ### ADRs Needing Review (>180 days old)
+              $(jq -r '.[] | "- \(.path) (age: \(.age_days) days)"' adrs-to-review.json | head -10)
+              
+              ### Recommended Actions
+              1. Review ADRs to ensure they reflect current architecture
+              2. Update or deprecate outdated decisions
+              3. Check if documentation matches implementation
+              4. Archive obsolete documents
+              
+              ### Commands to Help
+              \`\`\`bash
+              # Check doc freshness
+              /docs-freshness
+              
+              # Update specific ADR
+              /adr-update <number> <status>
+              
+              # Sync docs with code
+              /docs-sync
+              \`\`\`
+              
+              ---
+              *Created by Documentation Freshness workflow*" \
+              --label "documentation" \
+              --label "maintenance"
+          fi
+      
+      - name: Upload analysis artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docs-analysis
+          path: |
+            stale-docs.json
+            doc-updates.json
+            adrs-to-review.json
+            updated-docs.txt
+
+  # Generate API documentation from OpenAPI
+  update-api-docs:
+    name: Update API Documentation
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Check for OpenAPI changes
+        id: check
+        run: |
+          # Check if OpenAPI spec has changed
+          if git diff HEAD~1 -- docs/api/openapi.yaml | grep -q .; then
+            echo "changed=true" >> $GITHUB_OUTPUT
+          else
+            echo "changed=false" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Generate API documentation
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          # Generate multiple formats
+          
+          # HTML documentation
+          npx @redocly/cli build-docs \
+            docs/api/openapi.yaml \
+            --output docs/api/index.html
+          
+          # Markdown documentation
+          npx widdershins \
+            --language_tabs 'python:Python' 'javascript:JavaScript' \
+            --summary docs/api/openapi.yaml \
+            -o docs/api/API.md
+          
+          # Postman collection
+          npx openapi-to-postman \
+            -s docs/api/openapi.yaml \
+            -o docs/api/postman-collection.json
+      
+      - name: Generate changelog
+        if: steps.check.outputs.changed == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          # Use Claude to generate changelog
+          if [ -f "docs/api/openapi.previous.yaml" ]; then
+            diff docs/api/openapi.previous.yaml docs/api/openapi.yaml | \
+              claude api-contractor \
+                "Generate a changelog entry for these API changes. 
+                Include breaking changes, new endpoints, and deprecations" \
+                --output-format markdown >> docs/api/CHANGELOG.md
+          fi
+          
+          # Save current as previous for next run
+          cp docs/api/openapi.yaml docs/api/openapi.previous.yaml
+      
+      - name: Commit documentation updates
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+          
+          git add docs/api/
+          git commit -m "docs: Update API documentation from OpenAPI spec" || echo "No changes"
+          git push || echo "No changes to push"

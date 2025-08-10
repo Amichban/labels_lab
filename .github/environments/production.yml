@@ -1,0 +1,307 @@
+# Production Environment Configuration
+# Requires approvals and uses OIDC for cloud authentication
+
+name: production
+
+# Approval requirements
+protection_rules:
+  required_reviewers:
+    - team-lead
+    - sre-oncall
+  
+  # Minimum number of approvals
+  required_approvals: 2
+  
+  # Wait timer before auto-approval (never for production)
+  wait_timer: null
+  
+  # Deployment branches
+  deployment_branches:
+    - main
+    - hotfix/*
+
+# Environment-specific secrets (stored in GitHub Secrets)
+secrets:
+  - ANTHROPIC_API_KEY
+  - DATABASE_URL
+  - REDIS_URL
+  - AWS_ROLE_ARN           # For OIDC
+  - GCP_WIF_PROVIDER       # For Workload Identity
+  - GCP_SERVICE_ACCOUNT
+  - SLACK_WEBHOOK_URL
+  - PAGERDUTY_API_KEY
+  - STATUS_PAGE_TOKEN
+
+# Environment variables
+variables:
+  ENVIRONMENT: production
+  LOG_LEVEL: info
+  ENABLE_METRICS: true
+  ENABLE_TRACING: true
+  CANARY_ENABLED: true
+  AUTO_ROLLBACK: true
+
+# AWS Configuration (OIDC)
+aws:
+  # OIDC Provider Configuration
+  oidc:
+    enabled: true
+    role_arn: "arn:aws:iam::123456789012:role/github-actions-production"
+    region: "us-east-1"
+    session_name: "GitHubActions-Production"
+    
+  # Permissions granted by the role
+  permissions:
+    - "ecs:UpdateService"
+    - "ecs:DescribeServices"
+    - "ecr:GetAuthorizationToken"
+    - "ecr:BatchCheckLayerAvailability"
+    - "ecr:PutImage"
+    - "cloudwatch:PutMetricData"
+    - "logs:CreateLogGroup"
+    - "logs:CreateLogStream"
+    - "logs:PutLogEvents"
+    - "secretsmanager:GetSecretValue"
+    - "rds:DescribeDBInstances"
+    
+  # Bedrock Configuration (for Claude)
+  bedrock:
+    enabled: true
+    model_id: "anthropic.claude-3-sonnet-20240229-v1:0"
+    region: "us-east-1"
+    max_tokens: 4096
+    temperature: 0.7
+    
+    # Cost controls
+    limits:
+      daily_budget: 50.00
+      monthly_budget: 1000.00
+      per_deployment: 5.00
+
+# GCP Configuration (Workload Identity)
+gcp:
+  # Workload Identity Federation
+  workload_identity:
+    enabled: true
+    provider: "projects/123456/locations/global/workloadIdentityPools/github/providers/github"
+    service_account: "github-actions@my-project.iam.gserviceaccount.com"
+    project_id: "my-project"
+    
+  # Permissions granted to service account
+  permissions:
+    - "compute.instances.get"
+    - "compute.instances.list"
+    - "container.clusters.get"
+    - "container.clusters.update"
+    - "storage.buckets.get"
+    - "storage.objects.create"
+    - "cloudkms.cryptoKeys.get"
+    - "secretmanager.versions.access"
+    
+  # Vertex AI Configuration (for Claude)
+  vertex_ai:
+    enabled: true
+    location: "us-central1"
+    model: "claude-3-sonnet@001"
+    
+    # Cost controls
+    limits:
+      daily_budget: 50.00
+      monthly_budget: 1000.00
+      per_deployment: 5.00
+
+# Deployment configuration
+deployment:
+  # Canary stages
+  canary:
+    enabled: true
+    stages:
+      - percentage: 1
+        duration: 15m
+        auto_proceed: false
+        require_approval: true
+      - percentage: 5
+        duration: 30m
+        auto_proceed: true
+        require_approval: false
+      - percentage: 25
+        duration: 2h
+        auto_proceed: true
+        require_approval: false
+      - percentage: 50
+        duration: 4h
+        auto_proceed: false
+        require_approval: true
+      - percentage: 100
+        duration: monitoring
+        auto_proceed: false
+        require_approval: true
+  
+  # Rollback configuration
+  rollback:
+    automatic: true
+    monitoring_period: 10m
+    
+    # Thresholds that trigger rollback
+    thresholds:
+      error_rate: 0.02        # 2% errors
+      latency_p95: 500        # 500ms
+      success_rate: 0.98      # 98% success
+      memory_usage: 85        # 85% memory
+      cpu_usage: 80           # 80% CPU
+    
+    # Notifications on rollback
+    notify:
+      slack: true
+      pagerduty: true
+      email: false
+  
+  # Health checks
+  health_checks:
+    - type: http
+      path: /health
+      interval: 10s
+      timeout: 5s
+      success_threshold: 3
+      failure_threshold: 2
+    
+    - type: tcp
+      port: 5432
+      interval: 30s
+      timeout: 10s
+    
+    - type: custom
+      script: ./scripts/health-check.sh
+      interval: 60s
+      timeout: 30s
+
+# Monitoring and alerting
+monitoring:
+  # Metrics provider
+  provider: prometheus
+  
+  # Key metrics to track
+  metrics:
+    - name: deployment_success_rate
+      query: "sum(rate(deployment_success[5m]))"
+      threshold: 0.95
+      
+    - name: mean_time_to_recovery
+      query: "avg(deployment_rollback_duration)"
+      threshold: 300  # 5 minutes
+      
+    - name: deployment_frequency
+      query: "count(deployments{environment='production'}[7d])"
+      threshold: 10   # At least 10 per week
+  
+  # Alerting rules
+  alerts:
+    - name: "Deployment Failed"
+      condition: "deployment_status == 'failed'"
+      severity: critical
+      notify: ["slack", "pagerduty"]
+      
+    - name: "High Error Rate Post-Deploy"
+      condition: "error_rate > 0.05 AND time_since_deploy < 3600"
+      severity: critical
+      notify: ["slack", "pagerduty"]
+      
+    - name: "Canary Underperforming"
+      condition: "canary_error_rate > stable_error_rate * 1.5"
+      severity: warning
+      notify: ["slack"]
+
+# Security requirements
+security:
+  # Required security scans
+  scans:
+    - type: dependency
+      tool: dependabot
+      block_on_high: true
+      
+    - type: container
+      tool: trivy
+      block_on_critical: true
+      
+    - type: secrets
+      tool: trufflehog
+      block_on_any: true
+      
+    - type: sast
+      tool: semgrep
+      block_on_high: false
+  
+  # Compliance checks
+  compliance:
+    - standard: "SOC2"
+      required: true
+    - standard: "PCI-DSS"
+      required: false
+    - standard: "HIPAA"
+      required: false
+
+# Post-deployment actions
+post_deployment:
+  # Verification
+  verification:
+    enabled: true
+    script: ./scripts/deploy/verify-deployment.sh
+    timeout: 300
+    
+  # Smoke tests
+  smoke_tests:
+    enabled: true
+    paths:
+      - ./tests/smoke/api.test.js
+      - ./tests/smoke/auth.test.js
+      - ./tests/smoke/critical-path.test.js
+    
+  # Performance tests
+  performance_tests:
+    enabled: true
+    tool: k6
+    script: ./tests/performance/load.js
+    thresholds:
+      p95_latency: 200ms
+      error_rate: 0.01
+    
+  # Notifications
+  notifications:
+    success:
+      - channel: slack
+        message: "✅ Production deployment successful: v{version}"
+      - channel: status_page
+        status: operational
+        
+    failure:
+      - channel: slack
+        message: "❌ Production deployment failed: v{version}"
+      - channel: pagerduty
+        severity: critical
+      - channel: status_page
+        status: partial_outage
+
+# Cost tracking
+cost_tracking:
+  enabled: true
+  
+  # Budget alerts
+  budgets:
+    infrastructure:
+      monthly: 5000.00
+      alert_at: [50, 80, 90, 100]
+      
+    claude_api:
+      monthly: 1000.00
+      alert_at: [50, 80, 90, 100]
+      
+    third_party_services:
+      monthly: 2000.00
+      alert_at: [50, 80, 90, 100]
+  
+  # Cost allocation tags
+  tags:
+    environment: production
+    team: platform
+    cost_center: engineering
+    project: claude-native-template

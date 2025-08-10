@@ -1,0 +1,56 @@
+#!/bin/bash
+# Run all tests with coverage
+
+echo "🧪 Running all tests..."
+
+# Python tests
+if [ -f "requirements.txt" ] && grep -q "pytest" requirements.txt; then
+  echo "Running Python tests..."
+  pytest tests/ \
+    --verbose \
+    --cov=src \
+    --cov-report=term-missing \
+    --cov-report=html:coverage/html \
+    --cov-report=xml:coverage.xml \
+    || exit 1
+fi
+
+# JavaScript/TypeScript tests
+if [ -f "src/web/package.json" ]; then
+  echo "Running JavaScript tests..."
+  cd src/web
+  npm test -- --coverage || exit 1
+  cd ../..
+fi
+
+# Integration tests
+if [ -d "tests/integration" ]; then
+  echo "Running integration tests..."
+  pytest tests/integration/ -v || exit 1
+fi
+
+# E2E tests (if configured)
+if [ -d "tests/e2e" ] && [ -f "playwright.config.ts" ]; then
+  echo "Running E2E tests..."
+  npx playwright test || exit 1
+fi
+
+# Generate coverage report
+echo ""
+echo "📊 Coverage Summary:"
+if [ -f "coverage.xml" ]; then
+  python -c "
+import xml.etree.ElementTree as ET
+tree = ET.parse('coverage.xml')
+root = tree.getroot()
+coverage = float(root.get('line-rate', 0)) * 100
+print(f'Overall coverage: {coverage:.1f}%')
+if coverage < 80:
+    print('⚠️  Coverage below 80% threshold')
+else:
+    print('✅ Coverage meets requirements')
+"
+fi
+
+echo ""
+echo "✅ All tests completed!"

@@ -1,0 +1,286 @@
+name: Security Scanning Template
+
+# This workflow demonstrates security scanning best practices.
+# It's a TEMPLATE - customize for your security needs.
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 0 * * 1'  # Weekly on Monday
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+  pull-requests: write
+
+jobs:
+  # STEP 1: Code Security Analysis
+  code-analysis:
+    name: 🔍 Code Security Analysis
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: javascript, python
+          # For other languages: cpp, csharp, go, java, ruby
+      
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+      
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+
+  # STEP 2: Secret Scanning
+  secret-scan:
+    name: 🔐 Secret Detection
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for better detection
+      
+      - name: Run TruffleHog OSS
+        uses: trufflesecurity/trufflehog@main
+        continue-on-error: true
+        with:
+          path: ./
+          base: ${{ github.event.repository.default_branch }}
+          head: HEAD
+          extra_args: --only-verified
+
+  # STEP 3: Dependency Scanning
+  dependency-scan:
+    name: 📦 Dependency Vulnerability Scan
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        continue-on-error: true
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          exit-code: '0'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+      
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        continue-on-error: true
+        with:
+          sarif_file: 'trivy-results.sarif'
+      
+      - name: Check Python dependencies
+        continue-on-error: true
+        run: |
+          if [ -f requirements.txt ]; then
+            pip install safety
+            safety check --file requirements.txt --json || true
+          else
+            echo "No requirements.txt found - skipping Python dependency check"
+          fi
+      
+      - name: Check Node dependencies
+        continue-on-error: true
+        run: |
+          if [ -f package.json ]; then
+            npm audit --audit-level=moderate || true
+          else
+            echo "No package.json found - skipping Node dependency check"
+          fi
+
+  # STEP 4: SAST Scanning
+  sast-scan:
+    name: 🛡️ Static Application Security Testing
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Run Bandit (Python Security)
+        continue-on-error: true
+        run: |
+          # Check if Python files exist before installing Bandit
+          if find . -name "*.py" -type f | head -1 | grep -q .; then
+            pip install bandit
+            bandit -r . -f json -o bandit-results.json || true
+          else
+            echo "No Python files found - skipping Bandit scan"
+          fi
+          if [ -f bandit-results.json ]; then
+            echo "### 🐍 Python Security Issues (Bandit)" >> $GITHUB_STEP_SUMMARY
+            echo '```json' >> $GITHUB_STEP_SUMMARY
+            cat bandit-results.json | jq '.results[] | {severity, issue_text, filename, line_number}' >> $GITHUB_STEP_SUMMARY || true
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+      
+      - name: Run Semgrep
+        uses: returntocorp/semgrep-action@v1
+        continue-on-error: true
+        with:
+          config: auto
+
+  # STEP 5: Container Scanning (if applicable)
+  container-scan:
+    name: 🐳 Container Security Scan
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Check for Dockerfile and scan
+        run: |
+          if [ -f Dockerfile ]; then
+            echo "🐳 Found Dockerfile - building and scanning..."
+            docker build -t localscan:latest . || echo "⚠️ Docker build failed"
+            
+            if docker images | grep -q localscan; then
+              echo "Running Trivy scan on built image..."
+              docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+                aquasec/trivy image localscan:latest \
+                --severity CRITICAL,HIGH \
+                --exit-code 0 || true
+            fi
+          else
+            echo "ℹ️ No Dockerfile found - skipping container scan"
+            echo "To enable container scanning:"
+            echo "  1. Add a Dockerfile to your repository"
+            echo "  2. The workflow will automatically build and scan it"
+          fi
+
+  # STEP 6: License and Compliance Check
+  compliance-check:
+    name: ⚖️ License & Compliance Check
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Check licenses
+        run: |
+          echo "📋 License Check"
+          echo ""
+          echo "Checking for license files..."
+          find . -name "LICENSE*" -o -name "COPYING*" | head -10
+          echo ""
+          echo "For production, consider using:"
+          echo "  - FOSSA (requires API key)"
+          echo "  - License Finder"
+          echo "  - Snyk License Compliance"
+
+  # STEP 7: Security Summary
+  security-summary:
+    name: 📊 Security Summary
+    runs-on: ubuntu-latest
+    needs: [code-analysis, secret-scan, dependency-scan, sast-scan]
+    if: always()
+    
+    steps:
+      - name: Generate security summary
+        run: |
+          echo "## 🔒 Security Scan Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Check each job status
+          if [ "${{ needs.code-analysis.result }}" = "success" ]; then
+            echo "✅ **Code Analysis**: No issues found" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ **Code Analysis**: Issues detected - review required" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [ "${{ needs.secret-scan.result }}" = "success" ]; then
+            echo "✅ **Secret Scan**: No secrets detected" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "🚨 **Secret Scan**: Potential secrets found - immediate action required!" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [ "${{ needs.dependency-scan.result }}" = "success" ]; then
+            echo "✅ **Dependencies**: All dependencies secure" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ **Dependencies**: Vulnerabilities found - update recommended" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [ "${{ needs.sast-scan.result }}" = "success" ]; then
+            echo "✅ **SAST**: No security issues in code" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ **SAST**: Security issues found - review recommended" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📚 Security Resources" >> $GITHUB_STEP_SUMMARY
+          echo "- [OWASP Top 10](https://owasp.org/www-project-top-ten/)" >> $GITHUB_STEP_SUMMARY
+          echo "- [CWE Top 25](https://cwe.mitre.org/top25/)" >> $GITHUB_STEP_SUMMARY
+          echo "- [GitHub Security Best Practices](https://docs.github.com/en/code-security)" >> $GITHUB_STEP_SUMMARY
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🔧 Next Steps" >> $GITHUB_STEP_SUMMARY
+          echo "1. Review any detected issues in the Security tab" >> $GITHUB_STEP_SUMMARY
+          echo "2. Update vulnerable dependencies" >> $GITHUB_STEP_SUMMARY
+          echo "3. Fix any code security issues" >> $GITHUB_STEP_SUMMARY
+          echo "4. Re-run scans after fixes" >> $GITHUB_STEP_SUMMARY
+
+  # STEP 8: Create issue for critical findings
+  create-issue:
+    name: 📝 Create Security Issue
+    runs-on: ubuntu-latest
+    needs: [secret-scan, dependency-scan]
+    if: failure()
+    
+    steps:
+      - name: Create issue for security findings
+        uses: actions/github-script@v7
+        continue-on-error: true
+        with:
+          script: |
+            const title = '🔒 Security Scan - Action Required';
+            const body = `## Security Issues Detected
+            
+            The automated security scan has found issues that need attention.
+            
+            ### Scan Results
+            - Secret Scan: ${{ needs.secret-scan.result }}
+            - Dependency Scan: ${{ needs.dependency-scan.result }}
+            
+            ### Priority Actions
+            1. If secrets were detected, rotate them immediately
+            2. Update vulnerable dependencies
+            3. Review security findings in the Security tab
+            
+            ### Resources
+            - [View Security Alerts](https://github.com/${{ github.repository }}/security)
+            - [View Workflow Run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+            
+            ---
+            *This issue was automatically created by the security workflow*`;
+            
+            try {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: title,
+                body: body,
+                labels: ['security', 'automated']
+              });
+            } catch (error) {
+              console.log('Could not create issue:', error.message);
+            }

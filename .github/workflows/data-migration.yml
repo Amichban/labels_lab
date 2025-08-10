@@ -1,0 +1,376 @@
+name: Data Model & Migration Testing
+
+on:
+  pull_request:
+    paths:
+      - 'services/api/models/**'
+      - 'services/api/migrations/**'
+      - 'alembic/**'
+      - '*.sql'
+      - 'docs/VOLUMETRICS.md'
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  analyze-migration:
+    name: Analyze Migration Impact
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || contains(github.event.comment.body, '@claude migration')
+    
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+          
+    outputs:
+      risk-level: ${{ steps.analyze.outputs.risk }}
+      performance-impact: ${{ steps.benchmark.outputs.impact }}
+      
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install alembic psycopg2-binary pytest-benchmark
+          npm install -g k6
+          
+      - name: Restore production-like data
+        run: |
+          # Create schema
+          psql -h localhost -U postgres -c "CREATE DATABASE test_db"
+          
+          # Apply current migrations
+          DATABASE_URL=postgresql://postgres:postgres@localhost:5432/test_db \
+            alembic upgrade head
+          
+          # Load volumetric test data
+          python scripts/generate_test_data.py --volumetrics docs/VOLUMETRICS.md
+          
+      - name: Analyze migration
+        id: analyze
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/test_db
+        run: |
+          python << 'EOF'
+          import os
+          import json
+          import subprocess
+          from pathlib import Path
+          
+          # Get migration files
+          migrations = list(Path('alembic/versions').glob('*.py'))
+          latest_migration = max(migrations, key=os.path.getctime)
+          
+          # Analyze migration for risk
+          with open(latest_migration) as f:
+              content = f.read()
+              
+          risk = "LOW"
+          risks = []
+          
+          # Check for dangerous operations
+          if 'drop_table' in content or 'DROP TABLE' in content:
+              risk = "CRITICAL"
+              risks.append("Table deletion detected")
+              
+          if 'drop_column' in content or 'DROP COLUMN' in content:
+              risk = "HIGH" if risk != "CRITICAL" else risk
+              risks.append("Column deletion detected")
+              
+          if 'alter_column' in content and 'nullable=False' in content:
+              risk = "MEDIUM" if risk == "LOW" else risk
+              risks.append("Adding NOT NULL constraint")
+              
+          if 'create_index' in content:
+              risk = "MEDIUM" if risk == "LOW" else risk
+              risks.append("Index creation (may lock table)")
+              
+          # Check table sizes from volumetrics
+          with open('docs/VOLUMETRICS.md') as f:
+              volumetrics = f.read()
+              
+          # Tables with >1M rows need special handling
+          large_tables = []
+          for line in volumetrics.split('\n'):
+              if '|' in line and any(size in line for size in ['1,000,000', '5,000,000', '10,000,000']):
+                  parts = line.split('|')
+                  if len(parts) > 1:
+                      table_name = parts[1].strip()
+                      if table_name in content:
+                          large_tables.append(table_name)
+                          
+          if large_tables:
+              risk = "HIGH" if risk in ["LOW", "MEDIUM"] else risk
+              risks.append(f"Affects large tables: {', '.join(large_tables)}")
+              
+          print(f"RISK={risk}")
+          print(f"RISKS={'|'.join(risks)}")
+          EOF
+          
+          echo "risk=$RISK" >> $GITHUB_OUTPUT
+          echo "risks=$RISKS" >> $GITHUB_OUTPUT
+          
+      - name: Run migration dry-run
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/test_db
+        run: |
+          # Generate migration plan
+          alembic upgrade head --sql > migration_plan.sql
+          
+          # Analyze execution plan
+          psql -h localhost -U postgres test_db << 'EOF'
+          \timing on
+          BEGIN;
+          \i migration_plan.sql
+          ROLLBACK;
+          EOF
+          
+      - name: Benchmark before migration
+        id: before
+        run: |
+          # Start API server
+          cd services/api
+          uvicorn main:app --host 0.0.0.0 --port 8000 &
+          API_PID=$!
+          
+          # Wait for API to be ready
+          sleep 5
+          
+          # Run baseline benchmark
+          k6 run tests/k6/baseline.js \
+            --out json=before.json \
+            --duration 2m \
+            --vus 50
+            
+          kill $API_PID
+          
+          # Extract metrics
+          jq '.metrics' before.json > before_metrics.json
+          
+      - name: Apply migration
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/test_db
+        run: |
+          alembic upgrade head
+          
+      - name: Benchmark after migration
+        id: after
+        run: |
+          # Start API server
+          cd services/api
+          uvicorn main:app --host 0.0.0.0 --port 8000 &
+          API_PID=$!
+          
+          sleep 5
+          
+          # Run benchmark after migration
+          k6 run tests/k6/baseline.js \
+            --out json=after.json \
+            --duration 2m \
+            --vus 50
+            
+          kill $API_PID
+          
+          # Extract metrics
+          jq '.metrics' after.json > after_metrics.json
+          
+      - name: Compare performance
+        id: benchmark
+        run: |
+          python << 'EOF'
+          import json
+          
+          with open('before_metrics.json') as f:
+              before = json.load(f)
+          with open('after_metrics.json') as f:
+              after = json.load(f)
+              
+          # Calculate deltas
+          deltas = {
+              'read_p95': (after['read_latency']['p(95)'] - before['read_latency']['p(95)']) / before['read_latency']['p(95)'] * 100,
+              'write_p95': (after['write_latency']['p(95)'] - before['write_latency']['p(95)']) / before['write_latency']['p(95)'] * 100,
+              'error_rate': after['errors']['rate'] - before['errors']['rate'],
+          }
+          
+          # Determine impact
+          impact = "NONE"
+          if abs(deltas['read_p95']) > 10 or abs(deltas['write_p95']) > 10:
+              impact = "HIGH"
+          elif abs(deltas['read_p95']) > 5 or abs(deltas['write_p95']) > 5:
+              impact = "MEDIUM"
+          elif abs(deltas['read_p95']) > 2 or abs(deltas['write_p95']) > 2:
+              impact = "LOW"
+              
+          # Generate report
+          report = f"""
+          ## Performance Impact
+          - Read p95: {deltas['read_p95']:+.1f}%
+          - Write p95: {deltas['write_p95']:+.1f}%
+          - Error rate: {deltas['error_rate']:+.3f}
+          
+          Impact Level: {impact}
+          """
+          
+          print(f"IMPACT={impact}")
+          print(f"REPORT={report}")
+          
+          with open('performance_report.md', 'w') as f:
+              f.write(report)
+          EOF
+          
+          echo "impact=$IMPACT" >> $GITHUB_OUTPUT
+          
+      - name: Post PR comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const riskLevel = '${{ steps.analyze.outputs.risk }}';
+            const risks = '${{ steps.analyze.outputs.risks }}'.split('|').join('\n- ');
+            const performanceReport = fs.readFileSync('performance_report.md', 'utf8');
+            
+            const body = `## 📊 Migration Analysis Report
+            
+            ### Risk Assessment: ${riskLevel}
+            ${risks ? '- ' + risks : 'No specific risks identified'}
+            
+            ${performanceReport}
+            
+            ### Migration Strategy
+            ${riskLevel === 'HIGH' || riskLevel === 'CRITICAL' ? 
+              '⚠️ **High Risk Migration - Recommend Expand→Backfill→Contract pattern**' : 
+              '✅ Standard migration approach appropriate'}
+            
+            ### Required Approvals
+            ${riskLevel === 'CRITICAL' ? '- 🔴 Requires DBA approval + downtime window' : ''}
+            ${riskLevel === 'HIGH' ? '- 🟡 Requires DBA review' : ''}
+            ${riskLevel === 'MEDIUM' ? '- 🟢 Standard review process' : ''}
+            
+            ### Next Steps
+            1. Review the migration plan
+            2. Check performance impact
+            3. ${riskLevel === 'HIGH' ? 'Implement chunked backfill strategy' : 'Apply migration normally'}
+            
+            ---
+            *Generated by Migration Analyzer*`;
+            
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: body
+            });
+
+  generate-backfill-job:
+    name: Generate Backfill Strategy
+    runs-on: ubuntu-latest
+    needs: analyze-migration
+    if: needs.analyze-migration.outputs.risk-level == 'HIGH' || needs.analyze-migration.outputs.risk-level == 'CRITICAL'
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Generate backfill job
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          # Use migrator agent to create backfill strategy
+          claude migrator "Read docs/VOLUMETRICS.md and the latest migration. Create a chunked backfill job with monitoring."
+          
+      - name: Create backfill script
+        run: |
+          cat > scripts/backfill_migration.py << 'EOF'
+          #!/usr/bin/env python3
+          """
+          Chunked backfill job for large table migration
+          Generated by Migration Analyzer
+          """
+          import time
+          import logging
+          from sqlalchemy import create_engine, text
+          import os
+          
+          logging.basicConfig(level=logging.INFO)
+          logger = logging.getLogger(__name__)
+          
+          DATABASE_URL = os.environ['DATABASE_URL']
+          CHUNK_SIZE = int(os.environ.get('CHUNK_SIZE', 1000))
+          SLEEP_MS = int(os.environ.get('SLEEP_MS', 100))
+          
+          def check_replication_lag():
+              """Check if replication lag is acceptable"""
+              # Implementation depends on your setup
+              return True
+              
+          def backfill():
+              engine = create_engine(DATABASE_URL)
+              
+              with engine.connect() as conn:
+                  # Get total rows
+                  total = conn.execute(text("SELECT COUNT(*) FROM target_table")).scalar()
+                  logger.info(f"Total rows to backfill: {total}")
+                  
+                  processed = 0
+                  while processed < total:
+                      # Process chunk
+                      conn.execute(text(f"""
+                          UPDATE target_table 
+                          SET new_column = calculate_value(old_column)
+                          WHERE id IN (
+                              SELECT id FROM target_table 
+                              WHERE new_column IS NULL
+                              ORDER BY id 
+                              LIMIT {CHUNK_SIZE}
+                          )
+                      """))
+                      
+                      processed += CHUNK_SIZE
+                      progress = (processed / total) * 100
+                      logger.info(f"Progress: {progress:.1f}% ({processed}/{total})")
+                      
+                      # Monitor and throttle
+                      if not check_replication_lag():
+                          logger.warning("High replication lag, sleeping...")
+                          time.sleep(5)
+                      
+                      time.sleep(SLEEP_MS / 1000)
+                      
+              logger.info("Backfill complete!")
+          
+          if __name__ == "__main__":
+              backfill()
+          EOF
+          
+          chmod +x scripts/backfill_migration.py
+          
+      - name: Commit backfill job
+        run: |
+          git config --global user.name "Migration Bot"
+          git config --global user.email "migrations@example.com"
+          git add scripts/backfill_migration.py
+          git commit -m "feat: Add chunked backfill job for migration"
+          git push

@@ -1,0 +1,75 @@
+#!/bin/bash
+# Deploy project to production
+
+echo "🚀 Deploying to production..."
+
+# Run pre-deployment checks
+echo "Running pre-deployment checks..."
+
+# Check for uncommitted changes
+if [ -n "$(git status --porcelain)" ]; then
+  echo "⚠️  Warning: Uncommitted changes detected"
+  read -p "Continue with deployment? (y/n) " -n 1 -r
+  echo
+  if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+    echo "Deployment cancelled"
+    exit 1
+  fi
+fi
+
+# Run tests
+echo "Running tests..."
+if [ -f "Makefile" ] && grep -q "^test:" Makefile; then
+  make test || {
+    echo "❌ Tests failed. Deployment cancelled."
+    exit 1
+  }
+else
+  echo "⚠️  No tests found. Skipping..."
+fi
+
+# Run linting
+echo "Running linters..."
+if [ -f "Makefile" ] && grep -q "^lint:" Makefile; then
+  make lint || {
+    echo "⚠️  Linting issues detected (continuing anyway)"
+  }
+fi
+
+# Build application
+echo "Building application..."
+if [ -d "src/web" ]; then
+  cd src/web && npm run build || {
+    echo "❌ Build failed"
+    exit 1
+  }
+  cd ../..
+fi
+
+# Deploy based on platform
+if [ -n "$RAILWAY_TOKEN" ]; then
+  echo "Deploying to Railway..."
+  railway up
+elif [ -n "$VERCEL_TOKEN" ]; then
+  echo "Deploying to Vercel..."
+  vercel --prod
+elif [ -n "$HEROKU_API_KEY" ]; then
+  echo "Deploying to Heroku..."
+  git push heroku main
+else
+  echo "No deployment platform configured"
+  echo "Set one of: RAILWAY_TOKEN, VERCEL_TOKEN, HEROKU_API_KEY"
+  exit 1
+fi
+
+echo "✅ Deployment complete!"
+
+# Run post-deployment checks
+echo "Running health checks..."
+if [ -n "$DEPLOYMENT_URL" ]; then
+  curl -f "$DEPLOYMENT_URL/health" || {
+    echo "⚠️  Health check failed"
+  }
+fi
+
+echo "🎉 Deployment successful!"

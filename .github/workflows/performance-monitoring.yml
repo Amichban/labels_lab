@@ -1,0 +1,488 @@
+name: Performance & Accessibility Monitoring
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  deployments: read
+
+jobs:
+  # Run Lighthouse on preview URLs
+  lighthouse:
+    name: Lighthouse Analysis
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Wait for preview deployment
+        id: preview
+        run: |
+          # Wait for Vercel/Netlify preview
+          echo "Waiting for preview URL..."
+          
+          # Get deployment URL (example for Vercel)
+          DEPLOYMENT_URL=""
+          for i in {1..30}; do
+            DEPLOYMENT_URL=$(gh api \
+              repos/${{ github.repository }}/deployments \
+              --jq '.[] | select(.environment == "Preview") | .statuses_url' | \
+              head -1 | \
+              xargs gh api --jq '.[] | select(.state == "success") | .target_url' | \
+              head -1)
+            
+            if [ -n "$DEPLOYMENT_URL" ]; then
+              echo "Preview URL found: $DEPLOYMENT_URL"
+              echo "url=$DEPLOYMENT_URL" >> $GITHUB_OUTPUT
+              break
+            fi
+            
+            echo "Attempt $i/30: Waiting for deployment..."
+            sleep 10
+          done
+          
+          if [ -z "$DEPLOYMENT_URL" ]; then
+            echo "No preview URL found, using localhost"
+            echo "url=http://localhost:3000" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
+      - name: Install Lighthouse CI
+        run: |
+          npm install -g @lhci/cli
+          npm install -g lighthouse
+      
+      - name: Get baseline scores (main branch)
+        id: baseline
+        run: |
+          # Fetch baseline from main branch artifact or API
+          if [ -f ".lighthouse/baseline.json" ]; then
+            cp .lighthouse/baseline.json baseline.json
+          else
+            # Run Lighthouse on production for baseline
+            lighthouse https://example.com \
+              --output=json \
+              --output-path=baseline.json \
+              --only-categories=performance,accessibility,best-practices,seo \
+              --chrome-flags="--headless --no-sandbox"
+          fi
+      
+      - name: Run Lighthouse on PR
+        id: lighthouse_pr
+        run: |
+          # Run Lighthouse on preview URL
+          lighthouse "${{ steps.preview.outputs.url }}" \
+            --output=json \
+            --output-path=lighthouse-pr.json \
+            --only-categories=performance,accessibility,best-practices,seo \
+            --chrome-flags="--headless --no-sandbox"
+          
+          # Also save HTML report
+          lighthouse "${{ steps.preview.outputs.url }}" \
+            --output=html \
+            --output-path=lighthouse-pr.html \
+            --only-categories=performance,accessibility,best-practices,seo \
+            --chrome-flags="--headless --no-sandbox"
+      
+      - name: Parse Lighthouse results
+        id: parse
+        run: |
+          # Extract scores
+          PR_PERF=$(jq '.categories.performance.score * 100' lighthouse-pr.json)
+          PR_A11Y=$(jq '.categories.accessibility.score * 100' lighthouse-pr.json)
+          PR_BEST=$(jq '.categories["best-practices"].score * 100' lighthouse-pr.json)
+          PR_SEO=$(jq '.categories.seo.score * 100' lighthouse-pr.json)
+          
+          # Extract Web Vitals
+          PR_LCP=$(jq '.audits["largest-contentful-paint"].numericValue' lighthouse-pr.json)
+          PR_FID=$(jq '.audits["max-potential-fid"].numericValue' lighthouse-pr.json)
+          PR_CLS=$(jq '.audits["cumulative-layout-shift"].numericValue' lighthouse-pr.json)
+          
+          # Get baseline scores
+          BASE_PERF=$(jq '.categories.performance.score * 100' baseline.json || echo "90")
+          BASE_A11Y=$(jq '.categories.accessibility.score * 100' baseline.json || echo "95")
+          BASE_LCP=$(jq '.audits["largest-contentful-paint"].numericValue' baseline.json || echo "2500")
+          BASE_CLS=$(jq '.audits["cumulative-layout-shift"].numericValue' baseline.json || echo "0.1")
+          
+          # Calculate deltas
+          PERF_DELTA=$(echo "$PR_PERF - $BASE_PERF" | bc)
+          A11Y_DELTA=$(echo "$PR_A11Y - $BASE_A11Y" | bc)
+          LCP_DELTA=$(echo "$PR_LCP - $BASE_LCP" | bc)
+          CLS_DELTA=$(echo "$PR_CLS - $BASE_CLS" | bc)
+          
+          # Output for next steps
+          echo "pr_perf=$PR_PERF" >> $GITHUB_OUTPUT
+          echo "pr_a11y=$PR_A11Y" >> $GITHUB_OUTPUT
+          echo "pr_lcp=$PR_LCP" >> $GITHUB_OUTPUT
+          echo "pr_cls=$PR_CLS" >> $GITHUB_OUTPUT
+          echo "perf_delta=$PERF_DELTA" >> $GITHUB_OUTPUT
+          echo "a11y_delta=$A11Y_DELTA" >> $GITHUB_OUTPUT
+          echo "lcp_delta=$LCP_DELTA" >> $GITHUB_OUTPUT
+          echo "cls_delta=$CLS_DELTA" >> $GITHUB_OUTPUT
+      
+      - name: Analyze with Claude
+        id: analyze
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          # Prepare data for Claude
+          cat lighthouse-pr.json | jq '{
+            scores: .categories,
+            audits: .audits,
+            pr_number: ${{ github.event.pull_request.number }},
+            baseline: {
+              performance: ${{ steps.parse.outputs.base_perf || 90 }},
+              lcp: ${{ steps.parse.outputs.base_lcp || 2500 }}
+            }
+          }' > lighthouse-analysis.json
+          
+          # Send to Claude for analysis
+          cat lighthouse-analysis.json | claude performance-analyzer \
+            "Analyze this Lighthouse report and provide actionable fixes for any regressions. 
+            Focus on Web Vitals deltas and specific code changes needed.
+            Output format: Markdown PR comment with fixes" \
+            --output-format markdown \
+            --max-tokens 2000 > claude-analysis.md
+      
+      - name: Post PR comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            
+            // Read Claude's analysis
+            const claudeAnalysis = fs.readFileSync('claude-analysis.md', 'utf8');
+            
+            // Build comment
+            const scores = {
+              performance: ${{ steps.parse.outputs.pr_perf }},
+              a11y: ${{ steps.parse.outputs.pr_a11y }},
+              lcp: ${{ steps.parse.outputs.pr_lcp }},
+              cls: ${{ steps.parse.outputs.pr_cls }}
+            };
+            
+            const deltas = {
+              performance: ${{ steps.parse.outputs.perf_delta }},
+              a11y: ${{ steps.parse.outputs.a11y_delta }},
+              lcp: ${{ steps.parse.outputs.lcp_delta }},
+              cls: ${{ steps.parse.outputs.cls_delta }}
+            };
+            
+            // Determine status emoji
+            const getStatusEmoji = (delta, inverse = false) => {
+              if (inverse) delta = -delta;
+              if (delta > 5) return '✅';
+              if (delta < -5) return '🔴';
+              return '⚠️';
+            };
+            
+            let comment = `## 🚦 Lighthouse Performance Report\n\n`;
+            comment += `**Performance:** ${scores.performance} (${deltas.performance > 0 ? '+' : ''}${deltas.performance}) ${getStatusEmoji(deltas.performance)}\n`;
+            comment += `**Accessibility:** ${scores.a11y} (${deltas.a11y > 0 ? '+' : ''}${deltas.a11y}) ${getStatusEmoji(deltas.a11y)}\n\n`;
+            
+            comment += `### Core Web Vitals\n`;
+            comment += `| Metric | Value | Delta | Status |\n`;
+            comment += `|--------|-------|-------|--------|\n`;
+            comment += `| LCP | ${(scores.lcp/1000).toFixed(2)}s | ${deltas.lcp > 0 ? '+' : ''}${(deltas.lcp/1000).toFixed(2)}s | ${getStatusEmoji(-deltas.lcp)} |\n`;
+            comment += `| CLS | ${scores.cls.toFixed(3)} | ${deltas.cls > 0 ? '+' : ''}${deltas.cls.toFixed(3)} | ${getStatusEmoji(-deltas.cls)} |\n\n`;
+            
+            comment += claudeAnalysis;
+            
+            // Find existing comment
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number
+            });
+            
+            const botComment = comments.find(comment => 
+              comment.user.type === 'Bot' && comment.body.includes('Lighthouse Performance Report')
+            );
+            
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: comment
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: comment
+              });
+            }
+      
+      - name: Upload reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: lighthouse-reports
+          path: |
+            lighthouse-pr.json
+            lighthouse-pr.html
+            claude-analysis.md
+
+  # Analyze database queries
+  database-analysis:
+    name: Database Query Analysis
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Find new/modified queries
+        id: queries
+        run: |
+          # Find SQL queries in changed files
+          git diff origin/main...HEAD --name-only | \
+            xargs grep -l "SELECT\|INSERT\|UPDATE\|DELETE" 2>/dev/null | \
+            head -20 > changed_queries.txt || true
+          
+          # Extract queries
+          python3 << 'EOF'
+          import re
+          import json
+          
+          queries = []
+          with open('changed_queries.txt', 'r') as f:
+              files = f.read().strip().split('\n')
+          
+          for file in files:
+              if not file:
+                  continue
+              try:
+                  with open(file, 'r') as f:
+                      content = f.read()
+                      # Find SQL queries (basic pattern)
+                      sql_pattern = r'(SELECT|INSERT|UPDATE|DELETE)[\s\S]+?(?:;|\)|`)'
+                      matches = re.findall(sql_pattern, content, re.IGNORECASE)
+                      for match in matches:
+                          queries.append({
+                              'file': file,
+                              'query': match[:500]  # Truncate long queries
+                          })
+              except:
+                  pass
+          
+          with open('queries.json', 'w') as f:
+              json.dump(queries[:10], f, indent=2)  # Limit to 10 queries
+          
+          print(f"Found {len(queries)} queries")
+          EOF
+      
+      - name: Analyze queries with Claude
+        if: steps.queries.outputs.count != '0'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          # Send queries to Claude for analysis
+          cat queries.json | claude performance-analyzer \
+            "Analyze these SQL queries for:
+            1. Missing indexes
+            2. N+1 query problems
+            3. Optimization opportunities
+            4. Security issues (SQL injection risks)
+            
+            For each issue, provide:
+            - The problem
+            - Suggested fix with code
+            - Index creation statements if needed
+            
+            Output format: Markdown with code blocks" \
+            --output-format markdown \
+            --max-tokens 3000 > query-analysis.md
+      
+      - name: Post query analysis comment
+        if: steps.queries.outputs.count != '0'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const analysis = fs.readFileSync('query-analysis.md', 'utf8');
+            
+            if (analysis && analysis.length > 100) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: `## 🗄️ Database Query Analysis\n\n${analysis}`
+              });
+            }
+
+  # Bundle size analysis
+  bundle-analysis:
+    name: Bundle Size Analysis
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Build and analyze bundle
+        run: |
+          # Build with stats
+          npm run build -- --stats > build-stats.json
+          
+          # Analyze with webpack-bundle-analyzer
+          npx webpack-bundle-analyzer build-stats.json -m json > bundle-analysis.json
+      
+      - name: Compare with main branch
+        run: |
+          # Get main branch bundle size
+          git checkout main
+          npm ci
+          npm run build -- --stats > main-stats.json
+          
+          # Compare sizes
+          node << 'EOF'
+          const fs = require('fs');
+          const mainStats = JSON.parse(fs.readFileSync('main-stats.json'));
+          const prStats = JSON.parse(fs.readFileSync('build-stats.json'));
+          
+          const mainSize = mainStats.assets.reduce((sum, a) => sum + a.size, 0);
+          const prSize = prStats.assets.reduce((sum, a) => sum + a.size, 0);
+          const delta = prSize - mainSize;
+          const deltaPercent = ((delta / mainSize) * 100).toFixed(2);
+          
+          const report = {
+            main: mainSize,
+            pr: prSize,
+            delta: delta,
+            deltaPercent: deltaPercent,
+            assets: prStats.assets.map(asset => ({
+              name: asset.name,
+              size: asset.size,
+              sizeHuman: (asset.size / 1024).toFixed(2) + ' KB'
+            }))
+          };
+          
+          fs.writeFileSync('bundle-report.json', JSON.stringify(report, null, 2));
+          EOF
+      
+      - name: Post bundle size comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = JSON.parse(fs.readFileSync('bundle-report.json'));
+            
+            const formatSize = (bytes) => {
+              if (bytes < 1024) return bytes + ' B';
+              if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(2) + ' KB';
+              return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
+            };
+            
+            const emoji = report.deltaPercent > 5 ? '⚠️' : 
+                         report.deltaPercent < -5 ? '✅' : '➡️';
+            
+            let comment = `## 📦 Bundle Size Analysis\n\n`;
+            comment += `**Total Size:** ${formatSize(report.pr)} `;
+            comment += `(${report.delta > 0 ? '+' : ''}${formatSize(report.delta)}, `;
+            comment += `${report.deltaPercent > 0 ? '+' : ''}${report.deltaPercent}%) ${emoji}\n\n`;
+            
+            if (Math.abs(report.deltaPercent) > 5) {
+              comment += `<details>\n<summary>View breakdown</summary>\n\n`;
+              comment += `| File | Size |\n|------|------|\n`;
+              report.assets.slice(0, 10).forEach(asset => {
+                comment += `| ${asset.name} | ${asset.sizeHuman} |\n`;
+              });
+              comment += `\n</details>\n`;
+            }
+            
+            if (report.deltaPercent > 10) {
+              comment += `\n⚠️ **Significant size increase detected!**\n`;
+              comment += `Run \`@claude analyze bundle\` for optimization suggestions.\n`;
+            }
+            
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: comment
+            });
+
+  # Cost analysis
+  cost-analysis:
+    name: Infrastructure Cost Analysis
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Analyze infrastructure changes
+        id: infra
+        run: |
+          # Check for infrastructure changes
+          if git diff origin/main...HEAD --name-only | grep -E "(terraform/|k8s/|docker-compose|Dockerfile)"; then
+            echo "changes=true" >> $GITHUB_OUTPUT
+          else
+            echo "changes=false" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Estimate cost impact
+        if: steps.infra.outputs.changes == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          # Get infrastructure changes
+          git diff origin/main...HEAD -- terraform/ k8s/ > infra-changes.diff
+          
+          # Analyze with Claude
+          cat infra-changes.diff | claude performance-analyzer \
+            "Analyze these infrastructure changes for cost impact:
+            1. Compute resource changes
+            2. Storage changes
+            3. Network/bandwidth impact
+            4. Service additions/removals
+            
+            Estimate monthly cost delta and suggest optimizations.
+            Output format: Markdown table with costs" \
+            --output-format markdown > cost-analysis.md
+      
+      - name: Post cost analysis
+        if: steps.infra.outputs.changes == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const analysis = fs.readFileSync('cost-analysis.md', 'utf8');
+            
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `## 💰 Infrastructure Cost Analysis\n\n${analysis}`
+            });

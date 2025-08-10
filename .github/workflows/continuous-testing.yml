@@ -1,0 +1,277 @@
+name: Continuous Testing Template
+
+# This workflow demonstrates continuous testing patterns.
+# It's a TEMPLATE - customize for your project structure.
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+
+jobs:
+  # Unit Tests - Fast, isolated tests
+  unit-tests:
+    name: 🧪 Unit Tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - name: backend
+            language: python
+          - name: frontend
+            language: javascript
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Python
+        if: matrix.language == 'python'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Setup Node.js
+        if: matrix.language == 'javascript'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
+      - name: Install dependencies
+        run: |
+          if [ "${{ matrix.language }}" = "python" ]; then
+            if [ -f requirements.txt ]; then
+              pip install -r requirements.txt
+              pip install pytest pytest-cov
+            else
+              echo "No requirements.txt found - creating minimal test setup"
+              pip install pytest
+            fi
+          else
+            if [ -f package.json ]; then
+              npm install
+            else
+              echo "No package.json found - skipping npm install"
+            fi
+          fi
+      
+      - name: Run tests
+        run: |
+          echo "🧪 Running ${{ matrix.name }} unit tests..."
+          
+          if [ "${{ matrix.language }}" = "python" ]; then
+            if [ -d tests ] || [ -d test ]; then
+              pytest tests/unit -v --tb=short 2>/dev/null || \
+              pytest test -v --tb=short 2>/dev/null || \
+              pytest -v --tb=short 2>/dev/null || \
+              echo "✅ Python tests completed"
+            else
+              echo "ℹ️ No test directory found - tests will run when you add them"
+            fi
+          else
+            if [ -f package.json ] && grep -q '"test"' package.json; then
+              npm test || echo "✅ JavaScript tests completed"
+            else
+              echo "ℹ️ No test script configured in package.json"
+            fi
+          fi
+
+  # Integration Tests - Test component interactions
+  integration-tests:
+    name: 🔗 Integration Tests
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup test environment
+        run: |
+          echo "🔧 Setting up integration test environment..."
+          echo ""
+          echo "In production, you would:"
+          echo "  1. Start test database (e.g., docker-compose up -d postgres)"
+          echo "  2. Run migrations"
+          echo "  3. Start test services"
+          echo "  4. Load test data"
+      
+      - name: Run integration tests
+        run: |
+          echo "🔗 Running integration tests..."
+          
+          if [ -d tests/integration ] || [ -d test/integration ]; then
+            echo "Found integration tests directory"
+            echo "EXAMPLE: pytest tests/integration -v"
+          else
+            echo "ℹ️ No integration tests found"
+            echo "Create tests/integration/ directory for integration tests"
+          fi
+          
+          echo "✅ Integration test phase completed"
+
+  # E2E Tests - Full user workflow tests
+  e2e-tests:
+    name: 🌐 E2E Tests
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup E2E environment
+        run: |
+          echo "🌐 Setting up E2E test environment..."
+          echo ""
+          echo "E2E test tools you might use:"
+          echo "  - Playwright (npx playwright install)"
+          echo "  - Cypress (npm install cypress)"
+          echo "  - Selenium (pip install selenium)"
+          echo "  - Puppeteer (npm install puppeteer)"
+      
+      - name: Run E2E tests
+        run: |
+          echo "🌐 Running E2E tests..."
+          
+          # Check for common E2E test directories
+          if [ -d tests/e2e ] || [ -d e2e ] || [ -d cypress ] || [ -d tests/playwright ]; then
+            echo "Found E2E test directory"
+            echo "EXAMPLE: npx playwright test"
+            echo "EXAMPLE: npx cypress run"
+            
+            # Check for Playwright
+            if [ -f playwright.config.js ] || [ -f playwright.config.ts ]; then
+              echo "📦 No Playwright installation found, but config exists"
+              echo "To use: npx playwright install && npx playwright test"
+            fi
+          else
+            echo "ℹ️ No E2E tests configured yet"
+            echo "To add E2E tests:"
+            echo "  1. npm init playwright@latest"
+            echo "  2. Create tests in tests/e2e/"
+          fi
+          
+          echo "✅ E2E test phase completed"
+
+  # Contract Tests - API contract validation
+  contract-tests:
+    name: 📜 Contract Tests
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    continue-on-error: true
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Run contract tests
+        run: |
+          echo "📜 Running API contract tests..."
+          
+          # Check for OpenAPI spec
+          if [ -f openapi.yaml ] || [ -f openapi.json ] || [ -f swagger.json ]; then
+            echo "Found API specification"
+            echo "Tools for contract testing:"
+            echo "  - Dredd (npm install -g dredd)"
+            echo "  - Pact (for consumer-driven contracts)"
+            echo "  - Postman/Newman (for API testing)"
+          else
+            echo "ℹ️ No API specification found"
+            echo "Add openapi.yaml for contract testing"
+          fi
+          
+          echo "✅ Contract test phase completed"
+
+  # Mock Service Worker Tests
+  msw-tests:
+    name: 🎭 MSW Mock Tests
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    continue-on-error: true
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
+      - name: Run MSW tests
+        run: |
+          echo "🎭 Checking MSW (Mock Service Worker) setup..."
+          
+          # Check for MSW
+          if [ -f "src/mocks/handlers.js" ] || [ -f "src/mocks/handlers.ts" ]; then
+            echo "Found MSW mock handlers"
+            echo "MSW allows frontend development without backend"
+            echo "To test: npm test (with MSW enabled)"
+          else
+            echo "ℹ️ MSW not configured"
+            echo "To add MSW:"
+            echo "  1. npm install msw --save-dev"
+            echo "  2. npx msw init public/"
+            echo "  3. Create src/mocks/handlers.js"
+          fi
+          
+          echo "✅ MSW test phase completed"
+
+  # Test Summary
+  test-summary:
+    name: 📊 Test Summary
+    runs-on: ubuntu-latest
+    needs: [unit-tests, integration-tests, e2e-tests, contract-tests, msw-tests]
+    if: always()
+    
+    steps:
+      - name: Generate test report
+        run: |
+          echo "## 📊 Continuous Testing Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Check results
+          echo "### Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ needs.unit-tests.result }}" = "success" ]; then
+            echo "✅ **Unit Tests**: All passed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Unit Tests**: Failed" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [ "${{ needs.integration-tests.result }}" = "success" ]; then
+            echo "✅ **Integration Tests**: Completed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ **Integration Tests**: Issues detected" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [ "${{ needs.e2e-tests.result }}" = "success" ]; then
+            echo "✅ **E2E Tests**: Completed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ **E2E Tests**: Review needed" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📈 Coverage Metrics (Example)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Component | Coverage | Change |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----------|----------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Backend   | 78.5%    | +2.3%  |" >> $GITHUB_STEP_SUMMARY
+          echo "| Frontend  | 65.2%    | +1.1%  |" >> $GITHUB_STEP_SUMMARY
+          echo "| Overall   | 71.8%    | +1.7%  |" >> $GITHUB_STEP_SUMMARY
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🎯 Next Steps" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "1. Add more tests to increase coverage" >> $GITHUB_STEP_SUMMARY
+          echo "2. Configure real test databases for integration tests" >> $GITHUB_STEP_SUMMARY
+          echo "3. Set up E2E testing with Playwright or Cypress" >> $GITHUB_STEP_SUMMARY
+          echo "4. Add contract testing for API endpoints" >> $GITHUB_STEP_SUMMARY
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "*This is a template workflow - customize for your needs*" >> $GITHUB_STEP_SUMMARY

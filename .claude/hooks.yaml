@@ -1,0 +1,101 @@
+# Claude Code Hooks Configuration
+# These hooks run automatically at specific points in Claude's workflow
+
+hooks:
+  # Format code before writing files
+  - event: PreToolUse
+    matcher:
+      tool: write_file
+    command: |
+      FILE_PATH=$(echo "$TOOL_INPUT" | jq -r '.path // ""')
+      if [[ $FILE_PATH == *.py ]]; then
+        black "$FILE_PATH" 2>/dev/null || true
+        isort "$FILE_PATH" 2>/dev/null || true
+      elif [[ $FILE_PATH == *.ts || $FILE_PATH == *.tsx ]]; then
+        prettier --write "$FILE_PATH" 2>/dev/null || true
+      fi
+    
+  # Security check for bash commands
+  - event: PreToolUse
+    matcher:
+      tool: bash
+    command: python3 .claude/hooks/security-check.py
+  
+  # Log all bash commands for audit
+  - event: PreToolUse
+    matcher:
+      tool: bash
+    command: |
+      COMMAND=$(echo "$TOOL_INPUT" | jq -r '.command // ""')
+      echo "[$(date)] Executing: $COMMAND" >> .claude/audit.log
+  
+  # Protect sensitive files and enforce agent path restrictions
+  - event: PreToolUse
+    matcher:
+      tool: write_file
+    command: python3 .claude/hooks/protect_paths.py
+  
+  - event: PreToolUse
+    matcher:
+      tool: edit_file
+    command: python3 .claude/hooks/protect_paths.py
+  
+  # Run tests after code changes
+  - event: PostToolUse
+    matcher:
+      tool: write_file
+    command: |
+      FILE_PATH=$(echo "$TOOL_INPUT" | jq -r '.path // ""')
+      if [[ $FILE_PATH == *.py && $FILE_PATH == *src/* ]]; then
+        # Find and run corresponding test
+        TEST_FILE=${FILE_PATH/src/tests}
+        TEST_FILE=${TEST_FILE/.py/_test.py}
+        if [ -f "$TEST_FILE" ]; then
+          pytest "$TEST_FILE" -xvs 2>/dev/null || echo "⚠️ Tests failed for $FILE_PATH"
+        fi
+      fi
+  
+  # Desktop notification when task completes
+  - event: Stop
+    command: |
+      if command -v osascript &> /dev/null; then
+        osascript -e 'display notification "Task completed" with title "Claude Code"'
+      elif command -v notify-send &> /dev/null; then
+        notify-send "Claude Code" "Task completed"
+      fi
+  
+  # Save session on completion
+  - event: Stop
+    command: |
+      SESSION_ID=$(date +%Y%m%d_%H%M%S)
+      SESSION_DIR=".claude/sessions/$SESSION_ID"
+      mkdir -p "$SESSION_DIR"
+      
+      # Save git diff if changes exist
+      if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
+        git diff > "$SESSION_DIR/changes.diff"
+        echo "Session saved: $SESSION_DIR"
+      fi
+  
+  # Feature Flag Approval Notifications
+  - event: WaitingForApproval
+    matcher:
+      type: "feature_flag"
+    command: |
+      python3 .claude/hooks/notify_approval.py \
+        --type "$APPROVAL_TYPE" \
+        --details "$APPROVAL_DETAILS" \
+        --channels "slack,github"
+  
+  - event: FlagRolloutChange
+    command: |
+      FLAG_NAME=$(echo "$EVENT_DATA" | jq -r '.flag_name')
+      NEW_PERCENTAGE=$(echo "$EVENT_DATA" | jq -r '.percentage')
+      echo "📊 Flag $FLAG_NAME rollout changed to $NEW_PERCENTAGE%"
+      python3 .claude/hooks/monitor_flag.py --flag "$FLAG_NAME"
+  
+  - event: FlagReadyForCleanup
+    command: |
+      FLAG_NAME=$(echo "$EVENT_DATA" | jq -r '.flag_name')
+      echo "🧹 Flag $FLAG_NAME is ready for cleanup (100% for 30+ days)"
+      claude flag-manager "Generate cleanup PR for $FLAG_NAME"
