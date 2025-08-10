@@ -8,7 +8,7 @@
 - Use Pydantic for validation
 - Async/await for I/O operations
 
-### TypeScript/JavaScript  
+### TypeScript/JavaScript
 - TypeScript strict mode enabled
 - Interfaces over types when possible
 - No `any` types without justification
