@@ -3,16 +3,22 @@ Core label computation engine
 
 Implements all label types including Enhanced Triple Barrier (Label 11.a)
 with support/resistance level adjustments for high-frequency trading models.
+
+Priority Labels Implementation (Issue #6):
+- Label 2: Volatility-Scaled Returns (P_{t+H} - P_t) / ATR_t
+- Labels 9-10: MFE/MAE with Profit Factor = MFE / |MAE|
+- Label 12: Level Retouch Count within horizon
+- Label 16: Breakout Beyond Level (0.2% threshold)
+- Label 17: Flip Within Horizon (support to resistance or vice versa)
 """
 
 import logging
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Any
-import numpy as np
 
 from src.models.data_models import (
-    Candle, Level, LabelSet, EnhancedTripleBarrierLabel,
-    BarrierHit, Granularity, LevelType
+    Candle, LabelSet, EnhancedTripleBarrierLabel,
+    BarrierHit, Granularity
 )
 from src.services.clickhouse_service import clickhouse_service
 from src.services.redis_cache import redis_cache
@@ -76,7 +82,14 @@ class LabelComputationEngine:
         
         # Determine which labels to compute
         if label_types is None:
-            label_types = ["enhanced_triple_barrier", "vol_scaled_return", "mfe_mae"]
+            label_types = [
+                "enhanced_triple_barrier", 
+                "vol_scaled_return", 
+                "mfe_mae",
+                "level_retouch_count",
+                "breakout_beyond_level", 
+                "flip_within_horizon"
+            ]
         
         # Get horizon end timestamp
         horizon_end = TimestampAligner.get_horizon_end(
@@ -100,8 +113,25 @@ class LabelComputationEngine:
             mfe, mae = await self._compute_mfe_mae(candle, horizon_end)
             label_set.mfe = mfe
             label_set.mae = mae
-            if mae != 0:
-                label_set.profit_factor = abs(mfe / mae) if mae < 0 else mfe / abs(mae)
+            # Profit Factor = MFE / |MAE| (Labels 9-10)
+            if mae is not None and mfe is not None and mae != 0:
+                label_set.profit_factor = mfe / abs(mae)
+        
+        # Priority labels implementation
+        if "level_retouch_count" in label_types:
+            label_set.retouch_count = await self._compute_level_retouch_count(
+                candle, horizon_end
+            )
+        
+        if "breakout_beyond_level" in label_types:
+            label_set.breakout_occurred = await self._compute_breakout_beyond_level(
+                candle, horizon_end
+            )
+        
+        if "flip_within_horizon" in label_types:
+            label_set.flip_occurred = await self._compute_flip_within_horizon(
+                candle, horizon_end
+            )
         
         # Compute basic metrics
         label_set.forward_return = await self._compute_forward_return(candle, horizon_end)
@@ -316,22 +346,54 @@ class LabelComputationEngine:
         candle: Candle,
         horizon_end: datetime
     ) -> Optional[float]:
-        """Compute volatility-scaled return"""
+        """
+        Compute Label 2: Volatility-Scaled Returns
+        Formula: (P_{t+H} - P_t) / ATR_t
+        
+        Args:
+            candle: Input candle at time t
+            horizon_end: Time t+H
+            
+        Returns:
+            Volatility-scaled return or None if computation fails
+        """
         try:
-            forward_return = await self._compute_forward_return(candle, horizon_end)
-            if forward_return is None:
+            # Get future price P_{t+H}
+            future_data = await self._get_path_data(
+                candle.instrument_id,
+                candle.granularity.value,
+                candle.ts,
+                horizon_end + timedelta(hours=4)  # Add buffer
+            )
+            
+            if not future_data:
                 return None
             
-            # Use ATR for volatility scaling
-            atr = candle.atr_14 if candle.atr_14 else self._estimate_atr(candle)
-            if atr <= 0:
+            # Find candle at horizon end (or closest)
+            future_price = None
+            for data in future_data:
+                if data["ts"] >= horizon_end:
+                    future_price = data["close"]
+                    break
+            
+            if future_price is None:
+                # Use last available candle
+                future_price = future_data[-1]["close"]
+            
+            # P_t (current price)
+            current_price = candle.close
+            
+            # ATR_t (volatility at time t)
+            atr_t = candle.atr_14 if candle.atr_14 else self._estimate_atr(candle)
+            if atr_t <= 0:
                 return None
             
-            # Scale return by volatility
-            vol_scaled_return = forward_return / atr
+            # Formula: (P_{t+H} - P_t) / ATR_t
+            vol_scaled_return = (future_price - current_price) / atr_t
             return vol_scaled_return
+            
         except Exception as e:
-            logger.error(f"Failed to compute vol scaled return: {e}")
+            logger.error(f"Failed to compute volatility-scaled return: {e}")
             return None
     
     async def _compute_forward_return(
@@ -379,12 +441,30 @@ class LabelComputationEngine:
         horizon_end: datetime
     ) -> Tuple[Optional[float], Optional[float]]:
         """
-        Compute Maximum Favorable Excursion (MFE) and Maximum Adverse Excursion (MAE)
+        Compute Labels 9-10: MFE/MAE with Profit Factor
+        MFE = max(P_{t+τ} - P_t) for τ in [0, H]
+        MAE = min(P_{t+τ} - P_t) for τ in [0, H]
+        Profit Factor = MFE / |MAE|
+        
+        Uses path data at lower granularity for accurate extremum detection.
+        
+        Args:
+            candle: Input candle at time t
+            horizon_end: Time t+H
+            
+        Returns:
+            Tuple of (MFE, MAE) in absolute price terms
         """
         try:
+            # Get path granularity for accurate extremum detection
+            path_granularity, _ = TimestampAligner.get_path_granularity(
+                candle.granularity.value
+            )
+            
+            # Fetch path data at lower granularity
             path_data = await self._get_path_data(
                 candle.instrument_id,
-                candle.granularity.value,
+                path_granularity,
                 candle.ts,
                 horizon_end
             )
@@ -393,24 +473,28 @@ class LabelComputationEngine:
                 return None, None
             
             entry_price = candle.close
-            mfe = 0.0  # Maximum favorable move
-            mae = 0.0  # Maximum adverse move
+            mfe = 0.0  # Maximum favorable move (absolute price)
+            mae = 0.0  # Maximum adverse move (absolute price)
             
+            # Iterate through all τ in [0, H]
             for data in path_data:
                 high = data.get("high", entry_price)
                 low = data.get("low", entry_price)
                 
-                # Calculate excursions
-                favorable_excursion = (high - entry_price) / entry_price
-                adverse_excursion = (low - entry_price) / entry_price
+                # Calculate price excursions (absolute)
+                favorable_excursion = high - entry_price
+                adverse_excursion = low - entry_price
                 
-                # Update maximums
+                # Update MFE (maximum favorable)
                 if favorable_excursion > mfe:
                     mfe = favorable_excursion
+                
+                # Update MAE (minimum adverse) 
                 if adverse_excursion < mae:
                     mae = adverse_excursion
             
             return mfe, mae
+            
         except Exception as e:
             logger.error(f"Failed to compute MFE/MAE: {e}")
             return None, None
@@ -420,6 +504,297 @@ class LabelComputationEngine:
         # Simple estimation using high-low range
         range_estimate = abs(candle.high - candle.low) / candle.close
         return max(range_estimate, 0.001)  # Minimum 0.1% ATR
+    
+    async def _compute_level_retouch_count(
+        self,
+        candle: Candle,
+        horizon_end: datetime
+    ) -> Optional[int]:
+        """
+        Compute Label 12: Level Retouch Count
+        Count of touches at same level within horizon.
+        
+        A "touch" is defined as price coming within 0.1% of the level price
+        without breaking through it significantly (>0.2%).
+        
+        Args:
+            candle: Input candle
+            horizon_end: End of horizon period
+            
+        Returns:
+            Count of level retouches or None if computation fails
+        """
+        try:
+            # Get active levels at candle timestamp
+            active_levels = await self._get_active_levels(
+                candle.instrument_id, candle.granularity, candle.ts
+            )
+            
+            if not active_levels:
+                return 0
+            
+            # Get path data at lower granularity for accurate touch detection
+            path_granularity, _ = TimestampAligner.get_path_granularity(
+                candle.granularity.value
+            )
+            
+            path_data = await self._get_path_data(
+                candle.instrument_id,
+                path_granularity,
+                candle.ts,
+                horizon_end
+            )
+            
+            if not path_data:
+                return 0
+            
+            touch_tolerance = 0.001  # 0.1% tolerance for touch detection
+            break_threshold = 0.002  # 0.2% threshold for breakout
+            
+            total_retouch_count = 0
+            
+            # Check each active level
+            for level in active_levels:
+                level_price = level["price"]
+                level_type = level["current_type"]
+                touch_count = 0
+                
+                for data in path_data:
+                    high = data.get("high", 0)
+                    low = data.get("low", 0)
+                    
+                    if level_type == "support":
+                        # Check if price touched support level
+                        distance_to_level = abs(low - level_price) / level_price
+                        
+                        # Touch condition: within tolerance
+                        if distance_to_level <= touch_tolerance:
+                            # Check if it's a retouch (not a breakout)
+                            break_distance = (level_price - low) / level_price
+                            if break_distance <= break_threshold:
+                                touch_count += 1
+                    
+                    elif level_type == "resistance":
+                        # Check if price touched resistance level
+                        distance_to_level = abs(high - level_price) / level_price
+                        
+                        # Touch condition: within tolerance
+                        if distance_to_level <= touch_tolerance:
+                            # Check if it's a retouch (not a breakout)
+                            break_distance = (high - level_price) / level_price
+                            if break_distance <= break_threshold:
+                                touch_count += 1
+                
+                total_retouch_count += touch_count
+            
+            return total_retouch_count
+            
+        except Exception as e:
+            logger.error(f"Failed to compute level retouch count: {e}")
+            return None
+    
+    async def _compute_breakout_beyond_level(
+        self,
+        candle: Candle,
+        horizon_end: datetime
+    ) -> Optional[bool]:
+        """
+        Compute Label 16: Breakout Beyond Level
+        Did price break significantly beyond level (0.2% threshold)?
+        
+        Args:
+            candle: Input candle
+            horizon_end: End of horizon period
+            
+        Returns:
+            True if breakout occurred, False otherwise, None if computation fails
+        """
+        try:
+            # Get active levels at candle timestamp
+            active_levels = await self._get_active_levels(
+                candle.instrument_id, candle.granularity, candle.ts
+            )
+            
+            if not active_levels:
+                return False
+            
+            # Get path data at lower granularity for accurate breakout detection
+            path_granularity, _ = TimestampAligner.get_path_granularity(
+                candle.granularity.value
+            )
+            
+            path_data = await self._get_path_data(
+                candle.instrument_id,
+                path_granularity,
+                candle.ts,
+                horizon_end
+            )
+            
+            if not path_data:
+                return False
+            
+            breakout_threshold = 0.002  # 0.2% threshold for significant breakout
+            
+            # Check each active level for breakouts
+            for level in active_levels:
+                level_price = level["price"]
+                level_type = level["current_type"]
+                
+                for data in path_data:
+                    high = data.get("high", 0)
+                    low = data.get("low", 0)
+                    
+                    if level_type == "support":
+                        # Check for support breakout (price below level)
+                        if low < level_price:
+                            break_distance = (level_price - low) / level_price
+                            if break_distance > breakout_threshold:
+                                return True
+                    
+                    elif level_type == "resistance":
+                        # Check for resistance breakout (price above level)
+                        if high > level_price:
+                            break_distance = (high - level_price) / level_price
+                            if break_distance > breakout_threshold:
+                                return True
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"Failed to compute breakout beyond level: {e}")
+            return None
+    
+    async def _compute_flip_within_horizon(
+        self,
+        candle: Candle,
+        horizon_end: datetime
+    ) -> Optional[bool]:
+        """
+        Compute Label 17: Flip Within Horizon
+        Did level flip from support to resistance or vice versa?
+        
+        This requires checking level events within the horizon period
+        to detect FLIP_TO_SUPPORT or FLIP_TO_RESISTANCE events.
+        
+        Args:
+            candle: Input candle
+            horizon_end: End of horizon period
+            
+        Returns:
+            True if flip occurred, False otherwise, None if computation fails
+        """
+        try:
+            # Get active levels at candle timestamp
+            active_levels = await self._get_active_levels(
+                candle.instrument_id, candle.granularity, candle.ts
+            )
+            
+            if not active_levels:
+                return False
+            
+            # For each level, check if flip events occurred within horizon
+            for level in active_levels:
+                level_id = level.get("level_id")
+                if not level_id:
+                    continue
+                
+                # Check level events within horizon (this would need ClickHouse query)
+                # For now, we'll use a simplified approach based on price action
+                flip_detected = await self._detect_level_flip_from_price_action(
+                    level, candle, horizon_end
+                )
+                
+                if flip_detected:
+                    return True
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"Failed to compute flip within horizon: {e}")
+            return None
+    
+    async def _detect_level_flip_from_price_action(
+        self,
+        level: Dict[str, Any],
+        candle: Candle,
+        horizon_end: datetime
+    ) -> bool:
+        """
+        Detect level flip based on price action analysis.
+        
+        A flip occurs when:
+        1. Support becomes resistance: price breaks below and then acts as resistance
+        2. Resistance becomes support: price breaks above and then acts as support
+        
+        Args:
+            level: Level information
+            candle: Input candle
+            horizon_end: End of horizon
+            
+        Returns:
+            True if flip is detected
+        """
+        try:
+            level_price = level["price"]
+            level_type = level["current_type"]
+            
+            # Get path data at lower granularity
+            path_granularity, _ = TimestampAligner.get_path_granularity(
+                candle.granularity.value
+            )
+            
+            path_data = await self._get_path_data(
+                candle.instrument_id,
+                path_granularity,
+                candle.ts,
+                horizon_end
+            )
+            
+            if not path_data:
+                return False
+            
+            breakout_threshold = 0.002  # 0.2% for breakout
+            retest_threshold = 0.001   # 0.1% for retest detection
+            
+            breakout_occurred = False
+            retest_occurred = False
+            
+            for data in path_data:
+                high = data.get("high", 0)
+                low = data.get("low", 0)
+                
+                if level_type == "support":
+                    # Check for support break (flip to resistance)
+                    if not breakout_occurred and low < level_price:
+                        break_distance = (level_price - low) / level_price
+                        if break_distance > breakout_threshold:
+                            breakout_occurred = True
+                    
+                    # After breakout, check for retest as resistance
+                    if breakout_occurred and high >= level_price:
+                        retest_distance = abs(high - level_price) / level_price
+                        if retest_distance <= retest_threshold:
+                            retest_occurred = True
+                
+                elif level_type == "resistance":
+                    # Check for resistance break (flip to support)
+                    if not breakout_occurred and high > level_price:
+                        break_distance = (high - level_price) / level_price
+                        if break_distance > breakout_threshold:
+                            breakout_occurred = True
+                    
+                    # After breakout, check for retest as support
+                    if breakout_occurred and low <= level_price:
+                        retest_distance = abs(low - level_price) / level_price
+                        if retest_distance <= retest_threshold:
+                            retest_occurred = True
+            
+            # Flip is confirmed if both breakout and retest occurred
+            return breakout_occurred and retest_occurred
+            
+        except Exception as e:
+            logger.error(f"Failed to detect level flip: {e}")
+            return False
     
     async def compute_batch_labels(
         self,

@@ -567,3 +567,192 @@ class TestLabelComputationEngine:
             assert result["processed_candles"] == len(mock_snapshots)
             assert result["successful_labels"] == len(mock_snapshots)
             assert result["error_rate"] == 0.0
+
+    # Priority Labels Tests (Issue #6)
+    
+    @pytest.mark.asyncio
+    async def test_volatility_scaled_returns_computation(self, engine, sample_candle):
+        """Test Label 2: Volatility-Scaled Returns computation."""
+        # Mock future price data
+        future_data = [
+            {"ts": sample_candle.ts + timedelta(hours=4), "close": 1.0570},
+            {"ts": sample_candle.ts + timedelta(hours=8), "close": 1.0580},
+            {"ts": sample_candle.ts + timedelta(hours=24), "close": 1.0590},  # Horizon end
+        ]
+        
+        engine._get_path_data = AsyncMock(return_value=future_data)
+        sample_candle.atr_14 = 0.0050  # 0.5% ATR
+        
+        horizon_end = sample_candle.ts + timedelta(hours=24)
+        result = await engine._compute_vol_scaled_return(sample_candle, horizon_end)
+        
+        # Expected: (1.0590 - 1.0520) / 0.0050 = 1.4
+        expected = (1.0590 - sample_candle.close) / sample_candle.atr_14
+        assert abs(result - expected) < 0.001
+        
+    @pytest.mark.asyncio
+    async def test_mfe_mae_computation_with_profit_factor(self, engine, sample_candle):
+        """Test Labels 9-10: MFE/MAE with Profit Factor computation."""
+        # Mock path data with price movements
+        path_data = [
+            {"high": 1.0530, "low": 1.0510},  # Small move
+            {"high": 1.0570, "low": 1.0500},  # MFE candidate
+            {"high": 1.0540, "low": 1.0480},  # MAE candidate  
+            {"high": 1.0550, "low": 1.0490},  # Final
+        ]
+        
+        engine._get_path_data = AsyncMock(return_value=path_data)
+        
+        horizon_end = sample_candle.ts + timedelta(hours=24)
+        mfe, mae = await engine._compute_mfe_mae(sample_candle, horizon_end)
+        
+        # MFE should be max(P_{t+τ} - P_t) = 1.0570 - 1.0520 = 0.0050
+        expected_mfe = 1.0570 - sample_candle.close
+        assert abs(mfe - expected_mfe) < 0.0001
+        
+        # MAE should be min(P_{t+τ} - P_t) = 1.0480 - 1.0520 = -0.0040
+        expected_mae = 1.0480 - sample_candle.close
+        assert abs(mae - expected_mae) < 0.0001
+        
+        # Verify profit factor computation in main method
+        with patch.object(engine, '_compute_mfe_mae', return_value=(mfe, mae)):
+            label_set = await engine.compute_labels(sample_candle, label_types=["mfe_mae"])
+            
+            # Profit Factor = MFE / |MAE| = 0.0050 / 0.0040 = 1.25
+            expected_profit_factor = abs(mfe / mae)
+            assert abs(label_set.profit_factor - expected_profit_factor) < 0.001
+
+    @pytest.mark.asyncio
+    async def test_level_retouch_count_computation(self, engine, sample_candle):
+        """Test Label 12: Level Retouch Count computation."""
+        # Mock active levels
+        mock_levels = [
+            {
+                "price": 1.0550,  # Resistance level
+                "current_type": "resistance"
+            },
+            {
+                "price": 1.0480,  # Support level
+                "current_type": "support"
+            }
+        ]
+        
+        # Mock path data with touches
+        path_data = [
+            {"high": 1.0549, "low": 1.0500},  # Touch resistance (within 0.1%)
+            {"high": 1.0530, "low": 1.0481},  # Touch support (within 0.1%)
+            {"high": 1.0551, "low": 1.0490},  # Another touch resistance
+            {"high": 1.0540, "low": 1.0479},  # Another touch support
+        ]
+        
+        engine._get_active_levels = AsyncMock(return_value=mock_levels)
+        engine._get_path_data = AsyncMock(return_value=path_data)
+        
+        horizon_end = sample_candle.ts + timedelta(hours=24)
+        result = await engine._compute_level_retouch_count(sample_candle, horizon_end)
+        
+        # Should count 4 touches total (2 resistance + 2 support)
+        assert result == 4
+
+    @pytest.mark.asyncio
+    async def test_breakout_beyond_level_computation(self, engine, sample_candle):
+        """Test Label 16: Breakout Beyond Level computation."""
+        # Mock active levels
+        mock_levels = [
+            {
+                "price": 1.0550,  # Resistance level
+                "current_type": "resistance"
+            }
+        ]
+        
+        # Mock path data with significant breakout (> 0.2%)
+        path_data = [
+            {"high": 1.0540, "low": 1.0500},  # No breakout
+            {"high": 1.0574, "low": 1.0510},  # Breakout: (1.0574 - 1.0550)/1.0550 > 0.002
+        ]
+        
+        engine._get_active_levels = AsyncMock(return_value=mock_levels)
+        engine._get_path_data = AsyncMock(return_value=path_data)
+        
+        horizon_end = sample_candle.ts + timedelta(hours=24)
+        result = await engine._compute_breakout_beyond_level(sample_candle, horizon_end)
+        
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_flip_within_horizon_computation(self, engine, sample_candle):
+        """Test Label 17: Flip Within Horizon computation."""
+        # Mock active levels
+        mock_levels = [
+            {
+                "level_id": "level_1",
+                "price": 1.0550,  # Resistance level that will flip
+                "current_type": "resistance"
+            }
+        ]
+        
+        # Mock path data showing resistance break and retest as support
+        path_data = [
+            {"high": 1.0540, "low": 1.0500},  # Before breakout
+            {"high": 1.0574, "low": 1.0530},  # Breakout above resistance (>0.2%)
+            {"high": 1.0560, "low": 1.0549},  # Retest as support (within 0.1%)
+        ]
+        
+        engine._get_active_levels = AsyncMock(return_value=mock_levels)
+        engine._get_path_data = AsyncMock(return_value=path_data)
+        
+        horizon_end = sample_candle.ts + timedelta(hours=24)
+        result = await engine._compute_flip_within_horizon(sample_candle, horizon_end)
+        
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_priority_labels_integration(self, engine, sample_candle):
+        """Test all priority labels are computed together."""
+        # Setup mocks for all priority labels
+        engine._get_active_levels = AsyncMock(return_value=[])
+        engine._get_path_data = AsyncMock(return_value=[
+            {"ts": sample_candle.ts, "high": 1.0530, "low": 1.0510, "close": 1.0520},
+            {"ts": sample_candle.ts + timedelta(hours=4), "high": 1.0540, "low": 1.0500, "close": 1.0535},
+        ])
+        
+        # Set ATR for volatility scaling
+        sample_candle.atr_14 = 0.0050
+        
+        priority_labels = [
+            "vol_scaled_return", 
+            "mfe_mae", 
+            "level_retouch_count", 
+            "breakout_beyond_level", 
+            "flip_within_horizon"
+        ]
+        
+        label_set = await engine.compute_labels(
+            sample_candle, 
+            label_types=priority_labels
+        )
+        
+        # Verify all priority labels were computed
+        assert label_set.vol_scaled_return is not None
+        assert label_set.mfe is not None
+        assert label_set.mae is not None 
+        assert label_set.profit_factor is not None
+        assert label_set.retouch_count is not None
+        assert label_set.breakout_occurred is not None
+        assert label_set.flip_occurred is not None
+
+    @pytest.mark.asyncio
+    async def test_default_label_types_includes_priority_labels(self, engine, sample_candle):
+        """Test that default label types include the new priority labels."""
+        engine._get_active_levels = AsyncMock(return_value=[])
+        engine._get_path_data = AsyncMock(return_value=[])
+        sample_candle.atr_14 = 0.0050
+        
+        # Use default label types (None)
+        label_set = await engine.compute_labels(sample_candle, label_types=None)
+        
+        # Should include both existing and priority labels
+        assert label_set.enhanced_triple_barrier is not None
+        assert label_set.retouch_count is not None
+        assert label_set.breakout_occurred is not None
+        assert label_set.flip_occurred is not None
