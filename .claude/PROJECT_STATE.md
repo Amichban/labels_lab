@@ -1,13 +1,14 @@
 # Project State
 
 ## Current Tasks
-- [ ] Set up ClickHouse schema (Issue #1)
-- [ ] Deploy to local environment with Docker
-- [ ] Configure GitHub Secrets for CI/CD
-- [ ] Implement remaining top 5 priority labels (Issue #6)
+- [ ] Add data validation checks (Issue #8)
+- [ ] Expand test coverage (Issue #9)
+- [ ] Document computation logic (Issue #10)
+- [ ] Connect to Firestore listener (Issue #11)
+- [ ] Build incremental computation engine (Issue #12)
 
 ## In Progress
-- 🔧 Phase 1: Foundation (Issues #1-5)
+- 🔧 Phase 2: Core Labels (Issues #6-10)
 
 ## Completed Today
 - ✅ Initialized Claude Code memory structure
