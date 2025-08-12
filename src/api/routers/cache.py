@@ -11,7 +11,7 @@ import asyncio
 import logging
 import time
 from datetime import datetime, timedelta
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 from fastapi import APIRouter, HTTPException, Request, Query, status, BackgroundTasks
 from fastapi.responses import JSONResponse
@@ -20,6 +20,9 @@ from pydantic import BaseModel, Field
 from src.api.schemas import GranularityEnum
 from src.services.redis_cache import redis_cache
 from src.services.clickhouse_service import clickhouse_service
+from src.services.cache_warmer import intelligent_cache_warmer, WarmingStrategy, WarmingPriority
+from src.services.cache_predictor import cache_predictor
+from src.services.cache_hierarchy import cache_hierarchy
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +45,28 @@ class CacheWarmRequest(BaseModel):
                 "instrument_id": "EURUSD",
                 "granularity": "H4",
                 "hours": 24
+            }
+        }
+
+
+class IntelligentWarmRequest(BaseModel):
+    """Request for intelligent cache warming with ML predictions"""
+    instrument_id: str = Field(..., description="Instrument to warm cache for")
+    granularity: GranularityEnum = Field(..., description="Time granularity")
+    strategy: str = Field("predictive", description="Warming strategy: market_open, predictive, pattern_based")
+    priority: str = Field("medium", description="Priority: critical, high, medium, low")
+    hours: int = Field(24, ge=1, le=168, description="Hours of data to cache")
+    cache_types: Optional[List[str]] = Field(None, description="Specific cache types: path_data, levels, labels")
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "instrument_id": "EURUSD",
+                "granularity": "H4",
+                "strategy": "predictive",
+                "priority": "high",
+                "hours": 24,
+                "cache_types": ["path_data", "levels", "labels"]
             }
         }
 
@@ -466,4 +491,352 @@ async def invalidate_cache(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Cache invalidation failed: {str(e)}"
+        )
+
+
+# New Advanced Cache Warming Endpoints for Issue #13
+
+@router.post(
+    "/cache/warm/intelligent",
+    status_code=202,
+    summary="Intelligent cache warming with ML predictions",
+    description="Use ML-based predictions and market awareness for optimal cache warming"
+)
+async def intelligent_cache_warm(
+    request: IntelligentWarmRequest,
+    background_tasks: BackgroundTasks,
+    req: Request
+):
+    """
+    Advanced cache warming using intelligent strategies:
+    - Predictive warming based on ML access patterns
+    - Market-aware warming for trading sessions
+    - Pattern-based warming from historical data
+    
+    This endpoint implements the /perf command approach for cache optimization.
+    """
+    trace_id = getattr(req.state, "trace_id", "unknown")
+    
+    try:
+        # Map string values to enums
+        strategy_map = {
+            "market_open": WarmingStrategy.MARKET_OPEN,
+            "predictive": WarmingStrategy.PREDICTIVE,
+            "pattern_based": WarmingStrategy.PATTERN_BASED,
+            "on_demand": WarmingStrategy.ON_DEMAND
+        }
+        
+        priority_map = {
+            "critical": WarmingPriority.CRITICAL,
+            "high": WarmingPriority.HIGH,
+            "medium": WarmingPriority.MEDIUM,
+            "low": WarmingPriority.LOW
+        }
+        
+        warming_strategy = strategy_map.get(request.strategy, WarmingStrategy.PREDICTIVE)
+        warming_priority = priority_map.get(request.priority, WarmingPriority.MEDIUM)
+        
+        # Schedule intelligent cache warming
+        task_id = await intelligent_cache_warmer.warm_cache(
+            instrument_id=request.instrument_id,
+            granularity=request.granularity.value,
+            strategy=warming_strategy,
+            priority=warming_priority,
+            hours=request.hours,
+            cache_types=request.cache_types
+        )
+        
+        response_data = {
+            "message": f"Intelligent cache warming scheduled for {request.instrument_id} {request.granularity.value}",
+            "task_id": task_id,
+            "strategy": request.strategy,
+            "priority": request.priority,
+            "estimated_completion": datetime.utcnow() + timedelta(minutes=2)
+        }
+        
+        logger.info(
+            f"Intelligent cache warming scheduled: {task_id}",
+            extra={
+                "trace_id": trace_id,
+                "instrument_id": request.instrument_id,
+                "strategy": request.strategy,
+                "priority": request.priority
+            }
+        )
+        
+        return JSONResponse(
+            content=response_data,
+            status_code=202,
+            headers={"X-Request-ID": trace_id}
+        )
+        
+    except Exception as e:
+        logger.error(
+            f"Failed to schedule intelligent cache warming: {str(e)}",
+            extra={"trace_id": trace_id},
+            exc_info=True
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Intelligent cache warming failed: {str(e)}"
+        )
+
+
+@router.get(
+    "/cache/warm/status/{task_id}",
+    summary="Get cache warming task status",
+    description="Check the status and progress of a cache warming task"
+)
+async def get_warming_task_status(
+    task_id: str,
+    request: Request
+):
+    """Get detailed status of a cache warming task"""
+    trace_id = getattr(request.state, "trace_id", "unknown")
+    
+    try:
+        status_info = intelligent_cache_warmer.get_task_status(task_id)
+        
+        if not status_info:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Cache warming task {task_id} not found"
+            )
+        
+        return JSONResponse(
+            content=status_info,
+            headers={"X-Request-ID": trace_id}
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            f"Failed to get warming task status: {str(e)}",
+            extra={"trace_id": trace_id},
+            exc_info=True
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get task status: {str(e)}"
+        )
+
+
+@router.get(
+    "/cache/hierarchy/stats",
+    summary="Get hierarchical cache statistics",
+    description="Get comprehensive statistics for L1/L2/L3 cache hierarchy"
+)
+async def get_cache_hierarchy_stats(request: Request):
+    """
+    Get detailed statistics for the hierarchical cache system:
+    - L1: Memory cache performance
+    - L2: Redis cache performance 
+    - L3: ClickHouse cache performance
+    - Overall hit rates and optimization metrics
+    """
+    trace_id = getattr(request.state, "trace_id", "unknown")
+    
+    try:
+        start_time = time.time()
+        hierarchy_stats = cache_hierarchy.get_cache_statistics()
+        response_time_ms = int((time.time() - start_time) * 1000)
+        
+        return JSONResponse(
+            content=hierarchy_stats,
+            headers={
+                "X-Response-Time-Ms": str(response_time_ms),
+                "X-Request-ID": trace_id
+            }
+        )
+        
+    except Exception as e:
+        logger.error(
+            f"Failed to get cache hierarchy stats: {str(e)}",
+            extra={"trace_id": trace_id},
+            exc_info=True
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get hierarchy statistics: {str(e)}"
+        )
+
+
+@router.get(
+    "/cache/predictor/stats",
+    summary="Get ML predictor statistics",
+    description="Get ML-based cache access pattern prediction statistics"
+)
+async def get_predictor_stats(request: Request):
+    """
+    Get ML cache predictor statistics including:
+    - Learned access patterns
+    - Prediction accuracy metrics
+    - Pattern confidence distribution
+    - Trading session correlations
+    """
+    trace_id = getattr(request.state, "trace_id", "unknown")
+    
+    try:
+        start_time = time.time()
+        predictor_stats = cache_predictor.get_predictor_statistics()
+        response_time_ms = int((time.time() - start_time) * 1000)
+        
+        return JSONResponse(
+            content=predictor_stats,
+            headers={
+                "X-Response-Time-Ms": str(response_time_ms),
+                "X-Request-ID": trace_id
+            }
+        )
+        
+    except Exception as e:
+        logger.error(
+            f"Failed to get predictor stats: {str(e)}",
+            extra={"trace_id": trace_id},
+            exc_info=True
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get predictor statistics: {str(e)}"
+        )
+
+
+@router.get(
+    "/cache/warming/recommendations",
+    summary="Get ML-based cache warming recommendations",
+    description="Get intelligent warming recommendations based on access patterns"
+)
+async def get_warming_recommendations(
+    look_ahead_hours: int = Query(2, ge=1, le=24, description="Hours to look ahead"),
+    request: Request = None
+):
+    """
+    Get ML-generated cache warming recommendations based on:
+    - Historical access patterns
+    - Trading session correlations
+    - Predicted access times
+    - Priority scoring
+    """
+    trace_id = getattr(request.state, "trace_id", "unknown")
+    
+    try:
+        start_time = time.time()
+        recommendations = cache_predictor.get_warming_recommendations(look_ahead_hours)
+        response_time_ms = int((time.time() - start_time) * 1000)
+        
+        recommendation_data = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "look_ahead_hours": look_ahead_hours,
+            "recommendations_count": len(recommendations),
+            "recommendations": [rec.to_dict() for rec in recommendations]
+        }
+        
+        return JSONResponse(
+            content=recommendation_data,
+            headers={
+                "X-Response-Time-Ms": str(response_time_ms),
+                "X-Request-ID": trace_id
+            }
+        )
+        
+    except Exception as e:
+        logger.error(
+            f"Failed to get warming recommendations: {str(e)}",
+            extra={"trace_id": trace_id},
+            exc_info=True
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get recommendations: {str(e)}"
+        )
+
+
+@router.get(
+    "/cache/warming/stats",
+    summary="Get cache warming service statistics",
+    description="Get comprehensive statistics for the intelligent cache warming service"
+)
+async def get_warming_stats(request: Request):
+    """
+    Get detailed statistics for cache warming operations:
+    - Task completion rates
+    - Performance metrics
+    - Cache hit rate improvements
+    - Throughput statistics
+    """
+    trace_id = getattr(request.state, "trace_id", "unknown")
+    
+    try:
+        start_time = time.time()
+        warming_stats = intelligent_cache_warmer.get_warming_statistics()
+        response_time_ms = int((time.time() - start_time) * 1000)
+        
+        return JSONResponse(
+            content=warming_stats,
+            headers={
+                "X-Response-Time-Ms": str(response_time_ms),
+                "X-Request-ID": trace_id
+            }
+        )
+        
+    except Exception as e:
+        logger.error(
+            f"Failed to get warming stats: {str(e)}",
+            extra={"trace_id": trace_id},
+            exc_info=True
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get warming statistics: {str(e)}"
+        )
+
+
+@router.post(
+    "/cache/hierarchy/optimize",
+    summary="Optimize cache level distribution",
+    description="Trigger intelligent optimization of cache hierarchy distribution"
+)
+async def optimize_cache_hierarchy(
+    background_tasks: BackgroundTasks,
+    request: Request
+):
+    """
+    Trigger cache hierarchy optimization:
+    - Promote hot items from L2 to L1
+    - Demote cold items from L1 to L2
+    - Handle memory pressure
+    - Rebalance cache levels
+    """
+    trace_id = getattr(request.state, "trace_id", "unknown")
+    
+    try:
+        # Schedule optimization in background
+        background_tasks.add_task(cache_hierarchy.optimize_cache_levels)
+        
+        response_data = {
+            "message": "Cache hierarchy optimization scheduled",
+            "estimated_completion": datetime.utcnow() + timedelta(minutes=1)
+        }
+        
+        logger.info(
+            "Cache hierarchy optimization scheduled",
+            extra={"trace_id": trace_id}
+        )
+        
+        return JSONResponse(
+            content=response_data,
+            status_code=202,
+            headers={"X-Request-ID": trace_id}
+        )
+        
+    except Exception as e:
+        logger.error(
+            f"Failed to schedule cache optimization: {str(e)}",
+            extra={"trace_id": trace_id},
+            exc_info=True
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Cache optimization failed: {str(e)}"
         )

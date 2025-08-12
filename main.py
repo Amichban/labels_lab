@@ -41,6 +41,11 @@ from src.api.middleware import (
 )
 from src.services.clickhouse_service import clickhouse_service
 from src.services.redis_cache import redis_cache
+from src.services.resilience_init import (
+    initialize_resilience,
+    shutdown_resilience,
+    health_check_endpoint
+)
 
 # Configure logging
 logging.basicConfig(
@@ -89,31 +94,69 @@ CACHE_MISSES = Counter(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan manager"""
+    """Application lifespan manager with resilience system integration"""
     # Startup
     logger.info("Starting Label Computation System...")
     
-    # Check database connections
-    if not clickhouse_service.check_connection():
-        logger.error("Failed to connect to ClickHouse")
-        raise RuntimeError("ClickHouse connection failed")
+    # Initialize resilience system first
+    try:
+        logger.info("Initializing resilience system...")
+        resilience_status = await initialize_resilience()
+        logger.info(
+            f"Resilience system initialized in {resilience_status.get('duration_ms', 0):.0f}ms - "
+            f"{resilience_status.get('services_registered', 0)} services registered"
+        )
+        
+        # Store resilience status in app state
+        app.state.resilience_status = resilience_status
+        
+    except Exception as e:
+        logger.error(f"Failed to initialize resilience system: {e}")
+        # Continue with basic connection checks as fallback
+        logger.warning("Falling back to basic connection checks...")
     
-    if not redis_cache.check_connection():
-        logger.error("Failed to connect to Redis")
-        raise RuntimeError("Redis connection failed")
+    # Check database connections (with circuit breaker protection if available)
+    clickhouse_healthy = clickhouse_service.check_connection()
+    redis_healthy = redis_cache.check_connection()
     
-    logger.info("All database connections established")
+    if not clickhouse_healthy:
+        logger.warning("ClickHouse connection failed - circuit breaker protection active")
+    
+    if not redis_healthy:
+        logger.warning("Redis connection failed - circuit breaker protection active")
+    
+    # With resilience system, we can continue even if some services are down
+    services_healthy = sum([clickhouse_healthy, redis_healthy])
+    logger.info(f"Service health check: {services_healthy}/2 services healthy")
+    
+    if services_healthy == 0:
+        logger.error("All critical services failed - cannot start application")
+        raise RuntimeError("All services failed to connect")
     
     # Initialize application state
     app.state.start_time = datetime.utcnow()
     app.state.request_count = 0
+    app.state.services_healthy = services_healthy
+    
+    logger.info("Label Computation System startup complete")
     
     yield
     
     # Shutdown
     logger.info("Shutting down Label Computation System...")
+    
+    try:
+        # Shutdown resilience system gracefully
+        await shutdown_resilience()
+        logger.info("Resilience system shutdown complete")
+    except Exception as e:
+        logger.error(f"Error during resilience system shutdown: {e}")
+    
+    # Close service connections
     clickhouse_service.close()
     redis_cache.close()
+    
+    logger.info("Label Computation System shutdown complete")
 
 
 # Create FastAPI application

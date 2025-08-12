@@ -1,5 +1,13 @@
 """
-ClickHouse connection and query service
+ClickHouse connection and query service with circuit breaker protection
+
+Enhanced with resilience patterns including:
+- Circuit breaker protection
+- Automatic retry with exponential backoff  
+- Fallback handlers for graceful degradation
+- Health monitoring and recovery
+
+Issue #14: Circuit breakers and failover mechanisms
 """
 from typing import List, Dict, Any, Optional
 from datetime import datetime
@@ -7,15 +15,18 @@ import logging
 from contextlib import contextmanager
 from clickhouse_driver import Client
 from config.settings import settings
+from .circuit_breaker import CircuitBreakerConfig, with_retry
+from .resilience_manager import get_resilience_manager
+from .fallback_handlers import get_fallback_handler
 
 logger = logging.getLogger(__name__)
 
 
 class ClickHouseService:
-    """Service for ClickHouse database operations"""
+    """Service for ClickHouse database operations with resilience features"""
     
     def __init__(self):
-        """Initialize ClickHouse connection"""
+        """Initialize ClickHouse connection with circuit breaker"""
         self.connection_params = {
             'host': settings.clickhouse_host,
             'port': settings.clickhouse_port,
@@ -30,6 +41,35 @@ class ClickHouseService:
             }
         }
         self._client: Optional[Client] = None
+        
+        # Get circuit breaker from resilience manager
+        self.resilience_manager = get_resilience_manager()
+        self.fallback_handler = get_fallback_handler('clickhouse')
+        
+        # Register service if not already registered
+        try:
+            self.circuit_breaker = self.resilience_manager.get_circuit_breaker('clickhouse')
+            if not self.circuit_breaker:
+                # Register with resilience manager
+                circuit_config = CircuitBreakerConfig(
+                    failure_threshold=3,
+                    recovery_timeout=120.0,
+                    timeout=30.0,
+                    success_threshold=2,
+                    expected_exception=(Exception,)
+                )
+                self.circuit_breaker = self.resilience_manager.register_service(
+                    'clickhouse', 
+                    'database', 
+                    'critical', 
+                    circuit_config,
+                    self._fallback_query_handler
+                )
+        except Exception as e:
+            logger.warning(f"Could not register ClickHouse with resilience manager: {e}")
+            self.circuit_breaker = None
+            
+        logger.info("ClickHouse service initialized with circuit breaker protection")
     
     @property
     def client(self) -> Client:
@@ -48,9 +88,27 @@ class ClickHouseService:
         finally:
             client.disconnect()
     
+    def _fallback_query_handler(self, query: str, params: Optional[Dict] = None, operation_type: str = "read") -> List[Dict[str, Any]]:
+        """Fallback handler for ClickHouse query failures"""
+        if self.fallback_handler:
+            import asyncio
+            # Convert sync call to async for fallback handler
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # If we're already in an async context, we need to handle this differently
+                logger.warning("Fallback handler called from sync context, returning empty result")
+                return []
+            else:
+                return loop.run_until_complete(
+                    self.fallback_handler.handle_query_failure(query, params, operation_type)
+                )
+        return []
+    
+    @with_retry(max_attempts=3, base_delay=1.0, max_delay=30.0, 
+                exceptions=(Exception,))
     def execute(self, query: str, params: Optional[Dict] = None) -> List[Dict[str, Any]]:
         """
-        Execute a query and return results as list of dicts
+        Execute a query and return results as list of dicts with circuit breaker protection
         
         Args:
             query: SQL query to execute
@@ -59,6 +117,15 @@ class ClickHouseService:
         Returns:
             List of dictionaries with query results
         """
+        # Use circuit breaker if available
+        if self.circuit_breaker:
+            return self.circuit_breaker.call(self._execute_query, query, params)
+        else:
+            # Fallback to direct execution
+            return self._execute_query(query, params)
+    
+    def _execute_query(self, query: str, params: Optional[Dict] = None) -> List[Dict[str, Any]]:
+        """Internal query execution method"""
         try:
             with self.get_client() as client:
                 result = client.execute(query, params or {}, with_column_types=True)
@@ -68,14 +135,34 @@ class ClickHouseService:
                 data, columns = result[0], result[1]
                 column_names = [col[0] for col in columns]
                 
-                return [dict(zip(column_names, row)) for row in data]
+                results = [dict(zip(column_names, row)) for row in data]
+                
+                # Cache successful query result for fallback
+                if self.fallback_handler:
+                    self.fallback_handler.cache_successful_query(query, params, results)
+                
+                return results
+                
         except Exception as e:
             logger.error(f"ClickHouse query failed: {e}")
+            # Signal service degradation to resilience manager
+            if hasattr(self.resilience_manager, 'fallback_orchestrator'):
+                import asyncio
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        asyncio.create_task(
+                            self.resilience_manager.fallback_orchestrator.service_degraded('clickhouse')
+                        )
+                except:
+                    pass
             raise
     
+    @with_retry(max_attempts=2, base_delay=2.0, max_delay=10.0,
+                exceptions=(Exception,))
     def insert(self, table: str, data: List[Dict[str, Any]]) -> int:
         """
-        Bulk insert data into table
+        Bulk insert data into table with circuit breaker protection
         
         Args:
             table: Table name (e.g., 'quantx.labels')
@@ -87,6 +174,14 @@ class ClickHouseService:
         if not data:
             return 0
         
+        # Use circuit breaker if available
+        if self.circuit_breaker:
+            return self.circuit_breaker.call(self._insert_data, table, data)
+        else:
+            return self._insert_data(table, data)
+    
+    def _insert_data(self, table: str, data: List[Dict[str, Any]]) -> int:
+        """Internal insert method"""
         try:
             with self.get_client() as client:
                 client.execute(f'INSERT INTO {table} VALUES', data)
@@ -94,6 +189,17 @@ class ClickHouseService:
                 return len(data)
         except Exception as e:
             logger.error(f"ClickHouse insert failed: {e}")
+            # Signal service degradation 
+            if hasattr(self.resilience_manager, 'fallback_orchestrator'):
+                import asyncio
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        asyncio.create_task(
+                            self.resilience_manager.fallback_orchestrator.service_degraded('clickhouse')
+                        )
+                except:
+                    pass
             raise
     
     def fetch_snapshots(self,
@@ -224,8 +330,23 @@ class ClickHouseService:
             True if connection is successful
         """
         try:
-            result = self.execute("SELECT 1 as check")
-            return len(result) > 0 and result[0]['check'] == 1
+            # Use direct connection check without circuit breaker to avoid recursive calls
+            result = self._execute_query("SELECT 1 as check")
+            is_healthy = len(result) > 0 and result[0]['check'] == 1
+            
+            # Notify resilience manager of successful health check
+            if is_healthy and hasattr(self.resilience_manager, 'fallback_orchestrator'):
+                import asyncio
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        asyncio.create_task(
+                            self.resilience_manager.fallback_orchestrator.service_recovered('clickhouse')
+                        )
+                except:
+                    pass
+            
+            return is_healthy
         except Exception as e:
             logger.error(f"ClickHouse connection check failed: {e}")
             return False

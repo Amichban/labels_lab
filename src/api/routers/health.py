@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 from src.api.schemas import HealthResponse, HealthStatusEnum, HealthMetrics
 from src.services.clickhouse_service import clickhouse_service
 from src.services.redis_cache import redis_cache
+from src.services.resilience_init import health_check_endpoint
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -353,6 +354,48 @@ async def get_liveness(request: Request):
                 "status": "dead",
                 "timestamp": datetime.utcnow(),
                 "error": str(e)
+            },
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE
+        )
+
+
+@router.get(
+    "/health/resilience",
+    summary="Resilience system health",
+    description="Comprehensive resilience system health check with circuit breaker status",
+    responses={
+        200: {"description": "Resilience system is healthy"},
+        503: {"description": "Resilience system has issues"}
+    }
+)
+async def get_resilience_health(request: Request):
+    """
+    Resilience system health check.
+    
+    Returns detailed status of:
+    - Circuit breakers for all services
+    - Fallback handler status
+    - Service degradation status
+    - Recovery mechanisms
+    """
+    try:
+        # Use the dedicated resilience health check endpoint
+        resilience_health = await health_check_endpoint()
+        
+        return JSONResponse(
+            content=resilience_health,
+            status_code=resilience_health.get('http_status', 503)
+        )
+        
+    except Exception as e:
+        logger.error(f"Resilience health check failed: {str(e)}", exc_info=True)
+        return JSONResponse(
+            content={
+                "status": "unhealthy",
+                "timestamp": datetime.utcnow().isoformat(),
+                "error": str(e),
+                "service": "resilience-system",
+                "message": "Resilience health check failed"
             },
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE
         )
